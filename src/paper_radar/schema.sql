@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS articles (
     metadata_status TEXT NOT NULL DEFAULT 'rss_only'
         CHECK (metadata_status IN ('rss_only', 'enriched', 'partial')),
     first_seen_at TEXT NOT NULL,
-    last_updated_at TEXT NOT NULL
+    last_updated_at TEXT NOT NULL,
+    enriched_fields_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_doi_unique
@@ -94,4 +95,4 @@ CREATE TABLE IF NOT EXISTS runs_log (
     notes TEXT NOT NULL DEFAULT ''
 );
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;

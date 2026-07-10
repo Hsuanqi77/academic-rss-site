@@ -9,6 +9,7 @@ from threading import Event
 from time import monotonic
 
 import pytest
+import httpx
 
 import paper_radar.database as database_module
 from paper_radar.config import FeedConfig, TopicConfig
@@ -26,6 +27,7 @@ from paper_radar.database import (
     upsert_article,
     utc_now,
 )
+from paper_radar.enrich import enrich_article
 from paper_radar.models import ArticleRecord
 
 
@@ -350,9 +352,111 @@ def test_upsert_article_inserts_all_fields_and_unicode_authors(
     assert row["oa_status"] == record.oa_status
     assert row["source_feed_url"] == record.source_feed_url
     assert row["metadata_status"] == record.metadata_status
+    assert json.loads(row["enriched_fields_json"]) == list(record.enriched_fields)
     assert row["first_seen_at"] == "2026-07-10T12:00:00Z"
     assert row["last_updated_at"] == "2026-07-10T12:00:00Z"
     assert resolve_article_uid(connection, record) == record.uid
+    assert connection.in_transaction is False
+
+
+def test_upsert_article_canonicalizes_and_validates_enriched_fields(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    record = article(enriched_fields=("oa_status", "title", "oa_status", "authors"))
+
+    assert upsert_article(connection, record) == "inserted"
+    assert connection.execute("SELECT enriched_fields_json FROM articles").fetchone()[0] == (
+        '["title","authors","oa_status"]'
+    )
+
+    invalid = replace(
+        record,
+        uid="url:invalid-provenance",
+        normalized_url="https://example.com/invalid-provenance",
+        enriched_fields=("not_a_field",),
+    )
+    with pytest.raises(ValueError, match="unsupported enriched field"):
+        upsert_article(connection, invalid)
+
+    assert connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "changes"),
+    [
+        ("title", {"title": "Untitled."}),
+        ("authors", {"authors": ("Unknown",)}),
+        ("abstract", {"abstract": "N/A."}),
+        ("published_at", {"published_at": None}),
+        ("article_type", {"article_type": "other"}),
+        ("oa_status", {"oa_status": "unknown"}),
+    ],
+)
+def test_upsert_rejects_inconsistent_incoming_provenance_before_sql(
+    connection: sqlite3.Connection,
+    field: str,
+    changes: dict[str, object],
+) -> None:
+    invalid = article(enriched_fields=(field,), **changes)
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(ValueError, match=rf"enriched field {field!r}.*meaningful"):
+            upsert_article(connection, invalid)
+    finally:
+        connection.set_trace_callback(None)
+
+    assert statements == []
+    assert connection.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    ("field", "column", "bad_value"),
+    [
+        ("title", "title", "Untitled."),
+        ("authors", "authors_json", "[]"),
+        ("abstract", "abstract", "Unknown."),
+        ("published_at", "published_at", None),
+        ("article_type", "article_type", "other"),
+        ("oa_status", "oa_status", "unknown"),
+    ],
+)
+def test_upsert_rejects_corrupt_stored_marker_value_pairs(
+    connection: sqlite3.Connection,
+    field: str,
+    column: str,
+    bad_value: object,
+) -> None:
+    register_default_journal(connection)
+    stored = article(metadata_status="enriched", enriched_fields=())
+    assert upsert_article(connection, stored) == "inserted"
+    connection.execute(
+        f"UPDATE articles SET {column} = ?, enriched_fields_json = ? WHERE uid = ?",
+        (bad_value, json.dumps([field]), stored.uid),
+    )
+    connection.commit()
+    incoming = replace(
+        stored,
+        article_url="https://example.com/articles/corrected",
+        normalized_url="https://example.com/articles/corrected",
+        enriched_fields=(),
+    )
+
+    with pytest.raises(RepositoryConflictError, match=rf"enriched field {field!r}.*meaningful"):
+        upsert_article(connection, incoming)
+
+    row = connection.execute(
+        "SELECT article_url, enriched_fields_json FROM articles WHERE uid = ?", (stored.uid,)
+    ).fetchone()
+    assert tuple(row) == (stored.article_url, json.dumps([field]))
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM article_url_aliases WHERE normalized_url = ?",
+            (incoming.normalized_url,),
+        ).fetchone()[0]
+        == 0
+    )
     assert connection.in_transaction is False
 
 
@@ -403,7 +507,18 @@ def test_url_only_article_is_enriched_without_uid_churn_or_tag_loss(
     replace_article_tags(connection, url_only.uid, [topic("acoustics", "Acoustics")])
 
     clock["now"] = "2026-07-11T12:00:00Z"
-    enriched = article(uid="doi:10.1234/example", doi="10.1234/example")
+    enriched = article(
+        uid="doi:10.1234/example",
+        doi="10.1234/example",
+        enriched_fields=(
+            "title",
+            "authors",
+            "abstract",
+            "published_at",
+            "article_type",
+            "oa_status",
+        ),
+    )
     assert upsert_article(connection, enriched) == "updated"
 
     rows = connection.execute("SELECT * FROM articles").fetchall()
@@ -527,7 +642,18 @@ def test_lower_quality_url_record_does_not_erase_enriched_metadata(
     register_default_journal(connection)
     clock = {"now": "2026-07-10T12:00:00Z"}
     monkeypatch.setattr(database_module, "utc_now", lambda: clock["now"])
-    enriched = article(uid="doi:10.1234/example", doi="10.1234/example")
+    enriched = article(
+        uid="doi:10.1234/example",
+        doi="10.1234/example",
+        enriched_fields=(
+            "title",
+            "authors",
+            "abstract",
+            "published_at",
+            "article_type",
+            "oa_status",
+        ),
+    )
     assert upsert_article(connection, enriched) == "inserted"
 
     clock["now"] = "2026-07-11T12:00:00Z"
@@ -566,7 +692,11 @@ def test_lower_rank_record_cannot_overwrite_enriched_title(
     connection: sqlite3.Connection,
 ) -> None:
     register_default_journal(connection)
-    enriched = article(title="Authoritative enriched title", metadata_status="enriched")
+    enriched = article(
+        title="Authoritative enriched title",
+        metadata_status="enriched",
+        enriched_fields=("title",),
+    )
     assert upsert_article(connection, enriched) == "inserted"
     rss_update = replace(
         enriched,
@@ -574,6 +704,7 @@ def test_lower_rank_record_cannot_overwrite_enriched_title(
         doi=None,
         title="Transient RSS title",
         metadata_status="rss_only",
+        enriched_fields=(),
     )
 
     assert upsert_article(connection, rss_update) == "skipped"
@@ -581,9 +712,163 @@ def test_lower_rank_record_cannot_overwrite_enriched_title(
     assert connection.execute("SELECT title FROM articles").fetchone()[0] == enriched.title
 
 
+def test_partial_status_does_not_freeze_ordinary_rss_title(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    original = article(
+        title="Old RSS title",
+        metadata_status="rss_only",
+        enriched_fields=(),
+    )
+    assert upsert_article(connection, original) == "inserted"
+    corrected = replace(
+        original,
+        title="Corrected RSS title",
+        metadata_status="partial",
+        enriched_fields=(),
+    )
+
+    assert upsert_article(connection, corrected) == "updated"
+
+    row = connection.execute(
+        "SELECT title, metadata_status, enriched_fields_json FROM articles"
+    ).fetchone()
+    assert tuple(row) == ("Corrected RSS title", "partial", "[]")
+
+
+def test_crossref_noop_then_outage_allows_corrected_rss_title_end_to_end(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    original = article(
+        uid="doi:10.1234/rss-correction",
+        doi="10.1234/rss-correction",
+        title="Old RSS title",
+        metadata_status="rss_only",
+        enriched_fields=(),
+    )
+    assert upsert_article(connection, original) == "inserted"
+
+    def crossref_success(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {}}, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(crossref_success)) as client:
+        no_contribution = enrich_article(client, original)
+    assert no_contribution.metadata_status == "enriched"
+    assert no_contribution.enriched_fields == ()
+    assert upsert_article(connection, no_contribution) == "updated"
+
+    corrected = replace(original, title="Corrected RSS title")
+
+    def crossref_outage(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(crossref_outage)) as client:
+        partial = enrich_article(client, corrected)
+    assert partial.metadata_status == "partial"
+    assert partial.enriched_fields == ()
+    assert upsert_article(connection, partial) == "updated"
+
+    row = connection.execute(
+        "SELECT title, metadata_status, enriched_fields_json FROM articles"
+    ).fetchone()
+    assert tuple(row) == ("Corrected RSS title", "enriched", "[]")
+
+
+def test_crossref_title_provenance_blocks_later_rss_title(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    crossref = article(
+        title="Crossref title",
+        metadata_status="enriched",
+        enriched_fields=("title",),
+    )
+    assert upsert_article(connection, crossref) == "inserted"
+    rss_only = replace(
+        crossref,
+        title="Later RSS title",
+        metadata_status="rss_only",
+        enriched_fields=(),
+    )
+
+    assert upsert_article(connection, rss_only) == "skipped"
+
+    row = connection.execute(
+        "SELECT title, metadata_status, enriched_fields_json FROM articles"
+    ).fetchone()
+    assert tuple(row) == ("Crossref title", "enriched", '["title"]')
+
+
+@pytest.mark.parametrize("protected_field", ["authors", "abstract", "article_type", "oa_status"])
+def test_each_enriched_field_protects_only_itself(
+    connection: sqlite3.Connection,
+    protected_field: str,
+) -> None:
+    register_default_journal(connection)
+    existing = article(
+        title="Old title",
+        authors=("Old Author",),
+        abstract="Old abstract",
+        published_at="2026-01-01T00:00:00Z",
+        article_type="research",
+        oa_status="open",
+        metadata_status="enriched",
+        enriched_fields=(protected_field,),
+    )
+    assert upsert_article(connection, existing) == "inserted"
+    incoming = replace(
+        existing,
+        title="New title",
+        authors=("New Author",),
+        abstract="New abstract",
+        published_at="2026-02-01T00:00:00Z",
+        article_type="review",
+        oa_status="closed",
+        metadata_status="partial",
+        enriched_fields=(),
+    )
+
+    assert upsert_article(connection, incoming) == "updated"
+
+    row = connection.execute("SELECT * FROM articles").fetchone()
+    values = {
+        "title": row["title"],
+        "authors": tuple(json.loads(row["authors_json"])),
+        "abstract": row["abstract"],
+        "published_at": row["published_at"],
+        "article_type": row["article_type"],
+        "oa_status": row["oa_status"],
+    }
+    old_values = {
+        "title": existing.title,
+        "authors": existing.authors,
+        "abstract": existing.abstract,
+        "published_at": existing.published_at,
+        "article_type": existing.article_type,
+        "oa_status": existing.oa_status,
+    }
+    new_values = {
+        "title": incoming.title,
+        "authors": incoming.authors,
+        "abstract": incoming.abstract,
+        "published_at": incoming.published_at,
+        "article_type": incoming.article_type,
+        "oa_status": incoming.oa_status,
+    }
+    for field, value in values.items():
+        assert value == (old_values[field] if field == protected_field else new_values[field])
+    assert json.loads(row["enriched_fields_json"]) == [protected_field]
+
+
 def test_same_rank_incoming_corrected_title_may_update(connection: sqlite3.Connection) -> None:
     register_default_journal(connection)
-    original = article(title="Original enriched title", metadata_status="enriched")
+    original = article(
+        title="Original enriched title",
+        metadata_status="enriched",
+        enriched_fields=("title",),
+    )
     assert upsert_article(connection, original) == "inserted"
 
     assert (
@@ -610,6 +895,7 @@ def test_lower_rank_record_cannot_change_known_enriched_oa_status(
         doi="10.1234/oa-rank",
         oa_status=enriched_oa,
         metadata_status="enriched",
+        enriched_fields=("oa_status",),
     )
     assert upsert_article(connection, enriched) == "inserted"
     rss_update = article(
@@ -620,24 +906,30 @@ def test_lower_rank_record_cannot_change_known_enriched_oa_status(
         metadata_status="rss_only",
     )
 
-    assert upsert_article(connection, rss_update) == "skipped"
+    assert upsert_article(connection, rss_update) == "updated"
 
     row = connection.execute("SELECT title, oa_status, metadata_status FROM articles").fetchone()
-    assert tuple(row) == (enriched.title, enriched_oa, "enriched")
+    assert tuple(row) == (rss_update.title, enriched_oa, "enriched")
 
 
 def test_same_rank_meaningful_oa_status_may_update_but_unknown_cannot_erase_it(
     connection: sqlite3.Connection,
 ) -> None:
     register_default_journal(connection)
-    original = article(oa_status="open", metadata_status="enriched")
+    original = article(oa_status="open", metadata_status="enriched", enriched_fields=("oa_status",))
     assert upsert_article(connection, original) == "inserted"
     changed = replace(original, oa_status="closed")
 
     assert upsert_article(connection, changed) == "updated"
     assert connection.execute("SELECT oa_status FROM articles").fetchone()[0] == "closed"
 
-    assert upsert_article(connection, replace(changed, oa_status="unknown")) == "skipped"
+    assert (
+        upsert_article(
+            connection,
+            replace(changed, oa_status="unknown", enriched_fields=()),
+        )
+        == "skipped"
+    )
     assert connection.execute("SELECT oa_status FROM articles").fetchone()[0] == "closed"
 
 
@@ -731,6 +1023,97 @@ def test_split_identity_rows_merge_tags_and_preserve_earliest_first_seen(
         "url-tag",
     }
     assert resolve_article_uid(connection, combined) == doi_row.uid
+
+
+def test_split_identity_merge_unions_provenance_and_keeps_enriched_values(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    doi_row = article(
+        uid="doi:provenance-survivor",
+        doi="10.1234/split-provenance",
+        normalized_url="https://example.com/provenance-old",
+        title="Enriched survivor title",
+        abstract="Ordinary survivor abstract",
+        authors=("Ordinary Survivor",),
+        enriched_fields=("title",),
+    )
+    url_row = article(
+        uid="url:provenance-loser",
+        doi=None,
+        normalized_url="https://example.com/provenance-canonical",
+        title="Ordinary loser title",
+        abstract="Enriched loser abstract",
+        authors=("Enriched Loser",),
+        enriched_fields=("authors", "abstract"),
+    )
+    assert upsert_article(connection, doi_row) == "inserted"
+    assert upsert_article(connection, url_row) == "inserted"
+    combined = article(
+        uid="doi:provenance-incoming",
+        doi=doi_row.doi,
+        normalized_url=url_row.normalized_url,
+        title="Incoming RSS title",
+        abstract="Incoming RSS abstract",
+        authors=("Incoming RSS Author",),
+        metadata_status="partial",
+        enriched_fields=(),
+    )
+
+    assert upsert_article(connection, combined) == "updated"
+
+    row = connection.execute("SELECT * FROM articles").fetchone()
+    assert row["title"] == doi_row.title
+    assert row["abstract"] == url_row.abstract
+    assert tuple(json.loads(row["authors_json"])) == url_row.authors
+    assert json.loads(row["enriched_fields_json"]) == ["title", "authors", "abstract"]
+
+
+def test_split_merge_rejects_empty_enriched_loser_without_freezing_rss_abstract(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    survivor = article(
+        uid="doi:invalid-provenance-survivor",
+        doi="10.1234/invalid-provenance",
+        normalized_url="https://example.com/invalid-provenance-old",
+        abstract="Good RSS abstract",
+        metadata_status="rss_only",
+        enriched_fields=(),
+    )
+    loser = article(
+        uid="url:invalid-provenance-loser",
+        doi=None,
+        normalized_url="https://example.com/invalid-provenance-canonical",
+        abstract=None,
+        metadata_status="enriched",
+        enriched_fields=(),
+    )
+    assert upsert_article(connection, survivor) == "inserted"
+    assert upsert_article(connection, loser) == "inserted"
+    connection.execute(
+        "UPDATE articles SET enriched_fields_json = '[\"abstract\"]' WHERE uid = ?",
+        (loser.uid,),
+    )
+    connection.commit()
+    combined = replace(
+        survivor,
+        uid="doi:invalid-provenance-incoming",
+        normalized_url=loser.normalized_url,
+    )
+
+    with pytest.raises(RepositoryConflictError, match="enriched field 'abstract'.*meaningful"):
+        upsert_article(connection, combined)
+
+    corrected = replace(survivor, abstract="Corrected RSS abstract")
+    assert upsert_article(connection, corrected) == "updated"
+    assert (
+        connection.execute(
+            "SELECT abstract FROM articles WHERE uid = ?", (survivor.uid,)
+        ).fetchone()[0]
+        == "Corrected RSS abstract"
+    )
+    assert connection.in_transaction is False
 
 
 def test_split_identity_merge_repoints_all_historical_aliases(
@@ -847,6 +1230,7 @@ def test_split_identity_merge_keeps_metadata_from_higher_quality_row(
         published_at="2026-07-01T00:00:00Z",
         article_type="research",
         metadata_status="enriched",
+        enriched_fields=("authors", "abstract", "published_at", "article_type"),
     )
     assert upsert_article(connection, doi_row) == "inserted"
     assert upsert_article(connection, url_row) == "inserted"
@@ -890,6 +1274,7 @@ def test_split_identity_merge_keeps_title_from_higher_quality_row(
         normalized_url="https://example.com/title-canonical",
         title="Authoritative enriched title",
         metadata_status="enriched",
+        enriched_fields=("title",),
     )
     assert upsert_article(connection, doi_row) == "inserted"
     assert upsert_article(connection, url_row) == "inserted"
@@ -924,6 +1309,7 @@ def test_split_identity_merge_keeps_oa_from_higher_quality_row(
         normalized_url="https://example.com/canonical",
         oa_status="open",
         metadata_status="enriched",
+        enriched_fields=("oa_status",),
     )
     assert upsert_article(connection, doi_row) == "inserted"
     assert upsert_article(connection, url_row) == "inserted"

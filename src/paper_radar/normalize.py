@@ -47,10 +47,13 @@ _SEPARATOR_TAGS = {
     "h5",
     "h6",
     "li",
+    "list-item",
     "p",
     "pre",
+    "sec",
     "td",
     "th",
+    "title",
     "tr",
 }
 
@@ -63,28 +66,34 @@ class _TextExtractor(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
-        if tag in _HIDDEN_TAGS:
-            self.hidden_tags.append(tag)
-        elif not self.hidden_tags and tag in _SEPARATOR_TAGS:
+        local_tag = _local_tag_name(tag)
+        if local_tag in _HIDDEN_TAGS:
+            self.hidden_tags.append(local_tag)
+        elif not self.hidden_tags and local_tag in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
-        if not self.hidden_tags and tag in _SEPARATOR_TAGS:
+        if not self.hidden_tags and _local_tag_name(tag) in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _HIDDEN_TAGS:
+        local_tag = _local_tag_name(tag)
+        if local_tag in _HIDDEN_TAGS:
             for index in range(len(self.hidden_tags) - 1, -1, -1):
-                if self.hidden_tags[index] == tag:
+                if self.hidden_tags[index] == local_tag:
                     del self.hidden_tags[index]
                     break
-        elif not self.hidden_tags and tag in _SEPARATOR_TAGS:
+        elif not self.hidden_tags and local_tag in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_data(self, data: str) -> None:
         if not self.hidden_tags:
             self.parts.append(data)
+
+
+def _local_tag_name(tag: str) -> str:
+    return tag.rsplit(":", 1)[-1].casefold()
 
 
 def clean_text(value: Any) -> str | None:

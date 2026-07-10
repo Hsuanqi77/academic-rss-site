@@ -1,10 +1,12 @@
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 import paper_radar.database as database_module
-from paper_radar.database import SCHEMA_PATH, connect_database, initialize_database
+from paper_radar.database import SCHEMA_PATH, connect_database, initialize_database, upsert_article
+from paper_radar.models import ArticleRecord
 
 
 def insert_journal(
@@ -48,13 +50,58 @@ def insert_article(
     )
 
 
+def create_v2_database(
+    connection: sqlite3.Connection, *, with_enriched_fields_column: bool = False
+) -> None:
+    enriched_column = (
+        ", enriched_fields_json TEXT NOT NULL DEFAULT '[]'" if with_enriched_fields_column else ""
+    )
+    connection.executescript(
+        f"""
+        CREATE TABLE journals (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            feed_url TEXT NOT NULL UNIQUE,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            etag TEXT,
+            last_modified TEXT,
+            last_checked_at TEXT,
+            last_success_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'never',
+            last_error TEXT
+        );
+        CREATE TABLE articles (
+            uid TEXT NOT NULL PRIMARY KEY,
+            doi TEXT,
+            journal_id TEXT NOT NULL REFERENCES journals(id),
+            title TEXT NOT NULL,
+            abstract TEXT,
+            authors_json TEXT NOT NULL DEFAULT '[]',
+            published_at TEXT,
+            article_type TEXT NOT NULL DEFAULT 'other',
+            article_url TEXT NOT NULL,
+            normalized_url TEXT,
+            oa_status TEXT NOT NULL DEFAULT 'unknown',
+            source_feed_url TEXT NOT NULL,
+            metadata_status TEXT NOT NULL DEFAULT 'rss_only',
+            first_seen_at TEXT NOT NULL,
+            last_updated_at TEXT NOT NULL
+            {enriched_column}
+        );
+        PRAGMA user_version = 2;
+        """
+    )
+
+
 def test_schema_path_targets_packaged_sql_file() -> None:
     assert SCHEMA_PATH.name == "schema.sql"
     assert SCHEMA_PATH.parent.name == "paper_radar"
     assert SCHEMA_PATH.is_file()
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS article_url_aliases" in schema
-    assert "PRAGMA user_version = 2" in schema
+    assert "enriched_fields_json TEXT NOT NULL DEFAULT '[]'" in schema
+    assert "PRAGMA user_version = 3" in schema
 
 
 def test_connect_database_creates_parent_and_applies_connection_settings(tmp_path: Path) -> None:
@@ -75,7 +122,7 @@ def test_connect_database_creates_parent_and_applies_connection_settings(tmp_pat
         connection.close()
 
 
-def test_initialize_database_creates_version_two_schema(tmp_path: Path) -> None:
+def test_initialize_database_creates_version_three_schema(tmp_path: Path) -> None:
     connection = sqlite3.connect(tmp_path / "paper-radar.sqlite3")
     connection.row_factory = sqlite3.Row
     try:
@@ -97,7 +144,7 @@ def test_initialize_database_creates_version_two_schema(tmp_path: Path) -> None:
             "article_tags",
             "runs_log",
         }
-        assert version == 2
+        assert version == 3
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         connection.close()
@@ -120,7 +167,7 @@ def test_initialize_database_is_idempotent_and_preserves_data(tmp_path: Path) ->
             "publisher": "nature",
             "feed_url": "https://example.com/feed.xml",
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -183,10 +230,10 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
     try:
         connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
         connection.execute("INSERT INTO sentinel VALUES ('preserve me')")
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
         connection.commit()
 
-        with pytest.raises(RuntimeError, match="unsupported database schema version: 3"):
+        with pytest.raises(RuntimeError, match="unsupported database schema version: 4"):
             initialize_database(connection)
 
         tables = {
@@ -197,7 +244,7 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
         }
         assert tables == {"sentinel"}
         assert connection.execute("SELECT value FROM sentinel").fetchone()[0] == "preserve me"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -219,7 +266,8 @@ def test_schema_defaults_and_indexes(tmp_path: Path) -> None:
         ).fetchone()
         article = connection.execute(
             """
-            SELECT authors_json, article_type, oa_status, metadata_status
+            SELECT authors_json, article_type, oa_status, metadata_status,
+                   enriched_fields_json
             FROM articles WHERE uid = 'article-1'
             """
         ).fetchone()
@@ -231,7 +279,7 @@ def test_schema_defaults_and_indexes(tmp_path: Path) -> None:
         ).fetchone()
 
         assert tuple(journal) == (1, "never")
-        assert tuple(article) == ("[]", "other", "unknown", "rss_only")
+        assert tuple(article) == ("[]", "other", "unknown", "rss_only", "[]")
         assert tuple(run) == (0, 0, 0, 0, "")
 
         article_indexes = {
@@ -492,7 +540,307 @@ def test_initialize_database_migrates_v1_and_backfills_url_aliases(tmp_path: Pat
         assert [tuple(row) for row in aliases] == [
             ("https://example.com/articles/canonical", "with-url")
         ]
+        article_columns = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info('articles')")
+        }
+        assert article_columns["enriched_fields_json"]["notnull"] == 1
+        assert article_columns["enriched_fields_json"]["dflt_value"] == "'[]'"
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.in_transaction is False
+    finally:
+        connection.close()
+
+
+def test_initialize_database_migrates_v2_enriched_fields_atomically_and_idempotently(
+    tmp_path: Path,
+) -> None:
+    connection = connect_database(tmp_path / "v2.sqlite3")
+    try:
+        create_v2_database(connection)
+        insert_journal(connection)
+        insert_article(connection, uid="legacy")
+        connection.commit()
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        try:
+            initialize_database(connection)
+        finally:
+            connection.set_trace_callback(None)
+
+        columns = {row["name"]: row for row in connection.execute("PRAGMA table_info('articles')")}
+        assert columns["enriched_fields_json"]["notnull"] == 1
+        assert columns["enriched_fields_json"]["dflt_value"] == "'[]'"
+        assert (
+            connection.execute(
+                "SELECT enriched_fields_json FROM articles WHERE uid = 'legacy'"
+            ).fetchone()[0]
+            == "[]"
+        )
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert (
+            sum(
+                statement.startswith("ALTER TABLE articles ADD COLUMN enriched_fields_json")
+                for statement in statements
+            )
+            == 1
+        )
+
+        statements.clear()
+        connection.set_trace_callback(statements.append)
+        try:
+            initialize_database(connection)
+        finally:
+            connection.set_trace_callback(None)
+        assert not any(
+            "ALTER TABLE articles ADD COLUMN enriched_fields_json" in s for s in statements
+        )
+        assert connection.in_transaction is False
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_legacy_migration_backfills_provenance_and_protects_fields(
+    tmp_path: Path, legacy_version: int
+) -> None:
+    connection = connect_database(tmp_path / f"v{legacy_version}-provenance.sqlite3")
+    try:
+        create_v2_database(connection)
+        connection.execute(f"PRAGMA user_version = {legacy_version}")
+        insert_journal(connection)
+        insert_article(connection, uid="legacy-enriched")
+        insert_article(connection, uid="legacy-partial")
+        insert_article(connection, uid="legacy-placeholders")
+        insert_article(connection, uid="legacy-rss")
+        meaningful_values = (
+            "Legacy title",
+            "Legacy abstract",
+            '["Legacy Author"]',
+            "2026-01-01T00:00:00Z",
+            "research",
+            "open",
+        )
+        connection.execute(
+            """
+            UPDATE articles
+            SET title = ?, abstract = ?, authors_json = ?, published_at = ?,
+                article_type = ?, oa_status = ?, metadata_status = 'enriched'
+            WHERE uid = 'legacy-enriched'
+            """,
+            meaningful_values,
+        )
+        connection.execute(
+            "UPDATE articles SET title = 'Partial title', metadata_status = 'partial' "
+            "WHERE uid = 'legacy-partial'"
+        )
+        connection.execute(
+            """
+            UPDATE articles
+            SET title = 'Untitled.', abstract = 'Unknown.', authors_json = '["Unknown"]',
+                published_at = ' ', article_type = 'other', oa_status = 'unknown',
+                metadata_status = 'enriched'
+            WHERE uid = 'legacy-placeholders'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE articles
+            SET title = ?, abstract = ?, authors_json = ?, published_at = ?,
+                article_type = ?, oa_status = ?, metadata_status = 'rss_only'
+            WHERE uid = 'legacy-rss'
+            """,
+            meaningful_values,
+        )
+        connection.commit()
+
+        initialize_database(connection)
+
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+        provenance = {
+            row["uid"]: json.loads(row["enriched_fields_json"])
+            for row in connection.execute(
+                "SELECT uid, enriched_fields_json FROM articles ORDER BY uid"
+            )
+        }
+        assert provenance == {
+            "legacy-enriched": [
+                "title",
+                "authors",
+                "abstract",
+                "published_at",
+                "article_type",
+                "oa_status",
+            ],
+            "legacy-partial": ["title"],
+            "legacy-placeholders": [],
+            "legacy-rss": [],
+        }
+
+        incoming = ArticleRecord(
+            uid="legacy-enriched",
+            doi=None,
+            journal_id="journal-1",
+            title="RSS replacement title",
+            abstract="RSS replacement abstract",
+            authors=("RSS Replacement",),
+            published_at="2026-02-01T00:00:00Z",
+            article_type="review",
+            article_url="https://example.com/articles/legacy-enriched",
+            normalized_url=None,
+            oa_status="closed",
+            source_feed_url="https://example.com/feed.xml",
+            metadata_status="rss_only",
+        )
+        assert upsert_article(connection, incoming) == "skipped"
+
+        protected = connection.execute(
+            """
+            SELECT title, abstract, authors_json, published_at, article_type, oa_status
+            FROM articles WHERE uid = 'legacy-enriched'
+            """
+        ).fetchone()
+        assert tuple(protected) == meaningful_values
+    finally:
+        connection.close()
+
+
+def test_initialize_database_does_not_reinfer_provenance_for_v3_rows(tmp_path: Path) -> None:
+    connection = connect_database(tmp_path / "v3-provenance.sqlite3")
+    try:
+        initialize_database(connection)
+        insert_journal(connection)
+        insert_article(connection, uid="v3-row")
+        connection.execute(
+            """
+            UPDATE articles
+            SET metadata_status = 'enriched', abstract = 'Meaningful',
+                enriched_fields_json = '["title"]'
+            WHERE uid = 'v3-row'
+            """
+        )
+        connection.commit()
+
+        initialize_database(connection)
+
+        assert (
+            connection.execute(
+                "SELECT enriched_fields_json FROM articles WHERE uid = 'v3-row'"
+            ).fetchone()[0]
+            == '["title"]'
+        )
+    finally:
+        connection.close()
+
+
+def test_initialize_database_does_not_alter_v2_when_provenance_column_exists(
+    tmp_path: Path,
+) -> None:
+    connection = connect_database(tmp_path / "v2-with-column.sqlite3")
+    try:
+        create_v2_database(connection, with_enriched_fields_column=True)
+        insert_journal(connection)
+        insert_article(connection, uid="already-migrated")
+        connection.execute(
+            "UPDATE articles SET enriched_fields_json = ? WHERE uid = ?",
+            ('["title"]', "already-migrated"),
+        )
+        connection.commit()
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        try:
+            initialize_database(connection)
+        finally:
+            connection.set_trace_callback(None)
+
+        assert not any(
+            "ALTER TABLE articles ADD COLUMN enriched_fields_json" in s for s in statements
+        )
+        assert (
+            connection.execute(
+                "SELECT enriched_fields_json FROM articles WHERE uid = 'already-migrated'"
+            ).fetchone()[0]
+            == '["title"]'
+        )
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    finally:
+        connection.close()
+
+
+def test_v2_to_v3_migration_failure_rolls_back_schema_version_and_data(tmp_path: Path) -> None:
+    class AlterFailingConnection(sqlite3.Connection):
+        def execute(  # type: ignore[override]
+            self, sql: str, parameters: tuple[object, ...] = ()
+        ) -> sqlite3.Cursor:
+            if sql.startswith("ALTER TABLE articles ADD COLUMN enriched_fields_json"):
+                raise sqlite3.OperationalError("injected provenance migration failure")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(
+        tmp_path / "v2-failure.sqlite3",
+        factory=AlterFailingConnection,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        create_v2_database(connection)
+        insert_journal(connection)
+        insert_article(connection, uid="preserved")
+        connection.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="provenance migration failure"):
+            initialize_database(connection)
+
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "enriched_fields_json" not in {
+            row["name"] for row in connection.execute("PRAGMA table_info('articles')")
+        }
+        assert (
+            connection.execute("SELECT title FROM articles WHERE uid = 'preserved'").fetchone()[0]
+            == "Article preserved"
+        )
+        assert connection.in_transaction is False
+    finally:
+        connection.close()
+
+
+def test_v2_provenance_backfill_failure_rolls_back_added_column_and_version(
+    tmp_path: Path,
+) -> None:
+    class BackfillFailingConnection(sqlite3.Connection):
+        def execute(  # type: ignore[override]
+            self, sql: str, parameters: tuple[object, ...] = ()
+        ) -> sqlite3.Cursor:
+            if "UPDATE articles" in sql and "enriched_fields_json" in sql:
+                raise sqlite3.OperationalError("injected provenance backfill failure")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(
+        tmp_path / "v2-backfill-failure.sqlite3",
+        factory=BackfillFailingConnection,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        create_v2_database(connection)
+        insert_journal(connection)
+        insert_article(connection, uid="preserved-backfill")
+        connection.execute(
+            "UPDATE articles SET metadata_status = 'enriched' WHERE uid = 'preserved-backfill'"
+        )
+        connection.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="provenance backfill failure"):
+            initialize_database(connection)
+
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "enriched_fields_json" not in {
+            row["name"] for row in connection.execute("PRAGMA table_info('articles')")
+        }
+        assert (
+            connection.execute(
+                "SELECT metadata_status FROM articles WHERE uid = 'preserved-backfill'"
+            ).fetchone()[0]
+            == "enriched"
+        )
         assert connection.in_transaction is False
     finally:
         connection.close()

@@ -28,6 +28,25 @@ def test_clean_text_turns_markup_into_safe_plain_text() -> None:
     assert clean_text(value) == "Hello world Again"
 
 
+def test_clean_text_separates_namespaced_jats_blocks_by_local_name() -> None:
+    value = "<jats:p>first block</jats:p><jats:p>second block</jats:p>"
+
+    cleaned = clean_text(value)
+
+    assert cleaned == "first block second block"
+    assert clean_text(cleaned) == cleaned
+
+
+def test_clean_text_handles_jats_sections_lists_and_hidden_tags_without_leakage() -> None:
+    value = (
+        "<jats:sec><jats:title>Heading</jats:title>"
+        "<jats:list-item>Visible item<jats:script>hidden()</jats:script></jats:list-item>"
+        "</jats:sec>"
+    )
+
+    assert clean_text(value) == "Heading Visible item"
+
+
 def test_clean_text_sanitizes_entity_escaped_markup_before_returning_text() -> None:
     value = "&lt;p&gt;Visible&lt;/p&gt;&lt;script&gt;ignore()&lt;/script&gt;"
 

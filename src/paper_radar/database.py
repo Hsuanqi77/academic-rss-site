@@ -8,7 +8,13 @@ from pathlib import Path
 from time import monotonic, sleep
 
 from paper_radar.config import FeedConfig, TopicConfig
-from paper_radar.models import ArticleRecord
+from paper_radar.models import (
+    ENRICHABLE_FIELD_ORDER,
+    ArticleRecord,
+    enriched_field_has_meaningful_value,
+    higher_metadata_status,
+    normalize_enriched_fields,
+)
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -26,8 +32,8 @@ _ARTICLE_COLUMNS = (
     "oa_status",
     "source_feed_url",
     "metadata_status",
+    "enriched_fields_json",
 )
-_METADATA_STATUS_RANK = {"rss_only": 0, "partial": 1, "enriched": 2}
 _WRITE_TRANSACTION_BUDGET_SECONDS = 5.0
 _WRITE_TRANSACTION_ATTEMPT_TIMEOUT_MS = 100
 _WRITE_TRANSACTION_RETRY_DELAY_SECONDS = 0.02
@@ -137,6 +143,7 @@ def upsert_article(connection: sqlite3.Connection, article: ArticleRecord) -> st
     existing UID remains the survivor so foreign-key relationships stay stable.
     """
 
+    _validate_article_enriched_fields(article)
     with _atomic(connection):
         if not _row_exists(connection, "journals", article.journal_id):
             raise RepositoryNotFoundError(f"journal not found: {article.journal_id}")
@@ -152,8 +159,8 @@ def upsert_article(connection: sqlite3.Connection, article: ArticleRecord) -> st
                     uid, doi, journal_id, title, abstract, authors_json,
                     published_at, article_type, article_url, normalized_url,
                     oa_status, source_feed_url, metadata_status,
-                    first_seen_at, last_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    enriched_fields_json, first_seen_at, last_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -200,6 +207,7 @@ def upsert_article(connection: sqlite3.Connection, article: ArticleRecord) -> st
             SET doi = ?, journal_id = ?, title = ?, abstract = ?, authors_json = ?,
                 published_at = ?, article_type = ?, article_url = ?, normalized_url = ?,
                 oa_status = ?, source_feed_url = ?, metadata_status = ?,
+                enriched_fields_json = ?,
                 first_seen_at = ?, last_updated_at = ?
             WHERE uid = ?
             """,
@@ -537,6 +545,7 @@ def _article_insert_values(article: ArticleRecord, timestamp: str) -> tuple[obje
         article.oa_status,
         article.source_feed_url,
         article.metadata_status,
+        _enriched_fields_json(article.enriched_fields),
         timestamp,
         timestamp,
     )
@@ -546,136 +555,168 @@ def _merged_article_values(
     survivor: sqlite3.Row, losers: Iterable[sqlite3.Row], article: ArticleRecord
 ) -> dict[str, object]:
     merged = dict(survivor)
+    enriched_fields = set(_stored_enriched_fields(merged))
     for loser in losers:
-        current_rank = _METADATA_STATUS_RANK[str(merged["metadata_status"])]
-        loser_rank = _METADATA_STATUS_RANK[str(loser["metadata_status"])]
-        loser_is_higher_quality = loser_rank > current_rank
+        loser_enriched_fields = set(_stored_enriched_fields(loser))
         if merged["doi"] is None and loser["doi"] is not None:
             merged["doi"] = loser["doi"]
-        merged["title"] = _prefer_protected_text(
-            merged["title"],
-            loser["title"],
-            prefer_candidate=loser_is_higher_quality,
-        )
-        merged["abstract"] = _prefer_protected_text(
-            merged["abstract"],
-            loser["abstract"],
-            prefer_candidate=loser_is_higher_quality,
-        )
-        if _json_has_authors(loser["authors_json"]) and (
-            loser_is_higher_quality or not _json_has_authors(merged["authors_json"])
-        ):
-            merged["authors_json"] = loser["authors_json"]
-        merged["published_at"] = _prefer_protected_text(
-            merged["published_at"],
-            loser["published_at"],
-            prefer_candidate=loser_is_higher_quality,
-        )
-        if loser["article_type"] != "other" and (
-            loser_is_higher_quality or merged["article_type"] == "other"
-        ):
-            merged["article_type"] = loser["article_type"]
-        merged["oa_status"] = _prefer_known_oa_status(
-            str(merged["oa_status"]),
-            str(loser["oa_status"]),
-            prefer_candidate=loser_is_higher_quality,
-        )
-        merged["metadata_status"] = _higher_metadata_status(
+        for field in ENRICHABLE_FIELD_ORDER:
+            column = _enrichable_column(field)
+            if _prefer_split_candidate(
+                field,
+                merged[column],
+                loser[column],
+                current_is_enriched=field in enriched_fields,
+                candidate_is_enriched=field in loser_enriched_fields,
+            ):
+                merged[column] = loser[column]
+        enriched_fields.update(loser_enriched_fields)
+        merged["metadata_status"] = higher_metadata_status(
             str(merged["metadata_status"]), str(loser["metadata_status"])
         )
         merged["first_seen_at"] = min(merged["first_seen_at"], loser["first_seen_at"])
 
-    incoming_is_not_lower_quality = (
-        _METADATA_STATUS_RANK[article.metadata_status]
-        >= _METADATA_STATUS_RANK[str(merged["metadata_status"])]
-    )
+    incoming_enriched_fields = set(normalize_enriched_fields(article.enriched_fields))
+    for field in ENRICHABLE_FIELD_ORDER:
+        column = _enrichable_column(field)
+        candidate = _incoming_enrichable_value(article, field)
+        candidate_is_enriched = field in incoming_enriched_fields
+        if _prefer_incoming_candidate(
+            field,
+            merged[column],
+            candidate,
+            current_is_enriched=field in enriched_fields,
+            candidate_is_enriched=candidate_is_enriched,
+        ):
+            merged[column] = candidate
+            if candidate_is_enriched:
+                enriched_fields.add(field)
+            else:
+                enriched_fields.discard(field)
+
     merged.update(
         {
             "doi": article.doi if article.doi is not None else merged["doi"],
             "journal_id": article.journal_id,
-            "title": _prefer_protected_text(
-                merged["title"],
-                article.title,
-                prefer_candidate=incoming_is_not_lower_quality,
-            ),
-            "abstract": _prefer_protected_text(
-                merged["abstract"],
-                article.abstract,
-                prefer_candidate=incoming_is_not_lower_quality,
-            ),
-            "authors_json": (
-                _authors_json(article.authors)
-                if _has_authors(article.authors)
-                and (incoming_is_not_lower_quality or not _json_has_authors(merged["authors_json"]))
-                else merged["authors_json"]
-            ),
-            "published_at": _prefer_protected_text(
-                merged["published_at"],
-                article.published_at,
-                prefer_candidate=incoming_is_not_lower_quality,
-            ),
-            "article_type": (
-                article.article_type
-                if article.article_type != "other"
-                and (incoming_is_not_lower_quality or merged["article_type"] == "other")
-                else merged["article_type"]
-            ),
             "article_url": article.article_url,
             "normalized_url": (
                 article.normalized_url
                 if article.normalized_url is not None
                 else merged["normalized_url"]
             ),
-            "oa_status": _prefer_known_oa_status(
-                str(merged["oa_status"]),
-                article.oa_status,
-                prefer_candidate=incoming_is_not_lower_quality,
-            ),
             "source_feed_url": article.source_feed_url,
-            "metadata_status": _higher_metadata_status(
+            "metadata_status": higher_metadata_status(
                 str(merged["metadata_status"]), article.metadata_status
             ),
+            "enriched_fields_json": _enriched_fields_json(enriched_fields),
         }
     )
     return merged
 
 
-def _prefer_protected_text(current: object, candidate: object, *, prefer_candidate: bool) -> object:
-    if _has_text(candidate) and (prefer_candidate or not _has_text(current)):
-        return candidate
-    return current
+def _prefer_split_candidate(
+    field: str,
+    current: object,
+    candidate: object,
+    *,
+    current_is_enriched: bool,
+    candidate_is_enriched: bool,
+) -> bool:
+    if not _enrichable_value_is_known(field, candidate):
+        return False
+    if not _enrichable_value_is_known(field, current):
+        return True
+    return candidate_is_enriched and not current_is_enriched
 
 
-def _prefer_known_oa_status(current: str, candidate: str, *, prefer_candidate: bool) -> str:
-    """Prefer stronger OA evidence; keep the stable survivor when split rows tie."""
-    if candidate == "unknown":
-        return current
-    if current == "unknown" or prefer_candidate:
-        return candidate
-    return current
+def _prefer_incoming_candidate(
+    field: str,
+    current: object,
+    candidate: object,
+    *,
+    current_is_enriched: bool,
+    candidate_is_enriched: bool,
+) -> bool:
+    if not _enrichable_value_is_known(field, candidate):
+        return False
+    if not _enrichable_value_is_known(field, current):
+        return True
+    return candidate_is_enriched or not current_is_enriched
 
 
-def _has_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+def _enrichable_column(field: str) -> str:
+    return "authors_json" if field == "authors" else field
 
 
-def _has_authors(authors: Iterable[str]) -> bool:
-    return any(author.strip() for author in authors)
+def _incoming_enrichable_value(article: ArticleRecord, field: str) -> object:
+    return _authors_json(article.authors) if field == "authors" else getattr(article, field)
+
+
+def _enrichable_value_is_known(field: str, value: object) -> bool:
+    if field == "authors":
+        return enriched_field_has_meaningful_value(field, _authors_from_json(value))
+    return enriched_field_has_meaningful_value(field, value)
 
 
 def _authors_json(authors: Iterable[str]) -> str:
     return json.dumps(list(authors), ensure_ascii=False, separators=(",", ":"))
 
 
-def _json_has_authors(value: str) -> bool:
-    parsed = json.loads(value)
-    return isinstance(parsed, list) and _has_authors(parsed)
+def _enriched_fields_json(fields: Iterable[str]) -> str:
+    normalized = normalize_enriched_fields(fields)
+    return json.dumps(list(normalized), ensure_ascii=False, separators=(",", ":"))
 
 
-def _higher_metadata_status(current: str, candidate: str) -> str:
-    return (
-        candidate if _METADATA_STATUS_RANK[candidate] > _METADATA_STATUS_RANK[current] else current
-    )
+def _json_enriched_fields(value: object) -> tuple[str, ...]:
+    if not isinstance(value, str):
+        raise RepositoryConflictError("stored enriched fields must be JSON text")
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise RepositoryConflictError("stored enriched fields contain invalid JSON") from exc
+    if not isinstance(parsed, list):
+        raise RepositoryConflictError("stored enriched fields must be a JSON list")
+    try:
+        return normalize_enriched_fields(parsed)
+    except ValueError as exc:
+        raise RepositoryConflictError(
+            "stored enriched fields contain an unsupported field"
+        ) from exc
+
+
+def _validate_article_enriched_fields(article: ArticleRecord) -> tuple[str, ...]:
+    enriched_fields = normalize_enriched_fields(article.enriched_fields)
+    for field in enriched_fields:
+        if not enriched_field_has_meaningful_value(field, getattr(article, field)):
+            raise ValueError(f"enriched field {field!r} must have a corresponding meaningful value")
+    return enriched_fields
+
+
+def _stored_enriched_fields(row: sqlite3.Row | dict[str, object]) -> tuple[str, ...]:
+    enriched_fields = _json_enriched_fields(row["enriched_fields_json"])
+    for field in enriched_fields:
+        value = (
+            _authors_from_json(row["authors_json"])
+            if field == "authors"
+            else row[_enrichable_column(field)]
+        )
+        if not enriched_field_has_meaningful_value(field, value):
+            raise RepositoryConflictError(
+                f"stored enriched field {field!r} must have a corresponding meaningful value"
+            )
+    return enriched_fields
+
+
+def _authors_from_json(value: object) -> list[object]:
+    if not isinstance(value, str):
+        raise RepositoryConflictError("stored authors must be JSON text")
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise RepositoryConflictError("stored authors contain invalid JSON") from exc
+    if not isinstance(parsed, list):
+        raise RepositoryConflictError("stored authors must be a JSON list")
+    return parsed
 
 
 def _schema_statements(script: str) -> Iterator[str]:
@@ -713,14 +754,50 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     try:
         _begin_immediate(connection)
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             raise RuntimeError(f"unsupported database schema version: {version}")
 
         script = SCHEMA_PATH.read_text(encoding="utf-8")
         for statement in _schema_statements(script):
             connection.execute(statement)
+        _ensure_enriched_fields_column(connection, source_version=version)
+        connection.execute("PRAGMA user_version = 3")
         connection.commit()
     except BaseException:
         if connection.in_transaction:
             connection.rollback()
         raise
+
+
+def _ensure_enriched_fields_column(connection: sqlite3.Connection, *, source_version: int) -> None:
+    article_columns = {row["name"] for row in connection.execute("PRAGMA table_info('articles')")}
+    if "enriched_fields_json" not in article_columns:
+        connection.execute(
+            "ALTER TABLE articles ADD COLUMN enriched_fields_json TEXT NOT NULL DEFAULT '[]'"
+        )
+        if source_version in (1, 2):
+            _backfill_legacy_enriched_fields(connection)
+
+
+def _backfill_legacy_enriched_fields(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT uid, title, abstract, authors_json, published_at, article_type, oa_status
+        FROM articles
+        WHERE metadata_status IN ('partial', 'enriched')
+        """
+    ).fetchall()
+    for row in rows:
+        enriched_fields: list[str] = []
+        for field in ENRICHABLE_FIELD_ORDER:
+            value = (
+                _authors_from_json(row["authors_json"])
+                if field == "authors"
+                else row[_enrichable_column(field)]
+            )
+            if enriched_field_has_meaningful_value(field, value):
+                enriched_fields.append(field)
+        connection.execute(
+            "UPDATE articles SET enriched_fields_json = ? WHERE uid = ?",
+            (_enriched_fields_json(enriched_fields), row["uid"]),
+        )

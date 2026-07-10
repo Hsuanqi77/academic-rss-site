@@ -1,37 +1,34 @@
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from paper_radar.models import ArticleRecord
+from paper_radar.models import (
+    ArticleRecord,
+    enriched_field_has_meaningful_value,
+    higher_metadata_status,
+    normalize_enriched_fields,
+)
 from paper_radar.normalize import clean_text, normalize_article_type
 
 
 USER_AGENT = "paper-radar/0.1 (+personal academic RSS reader)"
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 20.0
+# httpx applies this timeout to individual network phases; it is not a total wall-clock budget.
 
-_EMAIL_PATTERN = re.compile(r"^[^@\s]+@(?:[^@\s.]+\.)+[^@\s.]+$")
-_LOW_QUALITY_AUTHORS = frozenset(
-    {
-        "anonymous",
-        "et al",
-        "n/a",
-        "na",
-        "not available",
-        "unknown",
-        "unknown author",
-        "unknown author(s)",
-    }
+_EMAIL_LOCAL_PATTERN = re.compile(
+    r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*$"
 )
-_LOW_QUALITY_ABSTRACTS = frozenset(
-    {"abstract unavailable", "n/a", "no abstract", "no abstract available", "not available"}
-)
-_METADATA_STATUS_RANK = {"rss_only": 0, "partial": 1, "enriched": 2}
+_DNS_LABEL_PATTERN = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+class EnrichmentResponseError(ValueError):
+    """Raised when a metadata service returns an unusable response."""
 
 
 def enrich_article(
@@ -43,13 +40,16 @@ def enrich_article(
     if not isinstance(article.doi, str) or not article.doi.strip():
         return article
 
+    email = _optional_unpaywall_email(unpaywall_email)
+    request_doi = article.doi.strip()
     try:
-        encoded_doi = quote(article.doi, safe="")
+        encoded_doi = quote(request_doi, safe="")
     except (UnicodeError, ValueError):
-        metadata_status = _higher_metadata_status(article.metadata_status, "partial")
+        metadata_status = higher_metadata_status(article.metadata_status, "partial")
         return replace(article, metadata_status=metadata_status)
     enriched = article
     source_results: list[bool] = []
+    contributed_fields: set[str] = set()
 
     try:
         crossref_payload = _fetch_json(
@@ -57,13 +57,13 @@ def enrich_article(
             f"https://api.crossref.org/works/{encoded_doi}",
         )
         crossref_message = _crossref_message(crossref_payload)
-        enriched = _apply_crossref(enriched, crossref_message)
-    except Exception:
+        enriched, crossref_fields = _apply_crossref(enriched, crossref_message)
+        contributed_fields.update(crossref_fields)
+    except (httpx.HTTPError, EnrichmentResponseError):
         source_results.append(False)
     else:
         source_results.append(True)
 
-    email = _reasonable_email(unpaywall_email)
     if email is not None:
         try:
             unpaywall_payload = _fetch_json(
@@ -72,14 +72,22 @@ def enrich_article(
                 params={"email": email},
             )
             is_oa = _unpaywall_is_oa(unpaywall_payload)
-            enriched = replace(enriched, oa_status="open" if is_oa else "closed")
-        except Exception:
+            contributed_fields.add("oa_status")
+            enriched = replace(
+                enriched,
+                oa_status="open" if is_oa else "closed",
+                enriched_fields=_with_enriched_fields(enriched, contributed_fields),
+            )
+        except (httpx.HTTPError, EnrichmentResponseError):
             source_results.append(False)
         else:
             source_results.append(True)
 
-    requested_status = "enriched" if all(source_results) else "partial"
-    metadata_status = _higher_metadata_status(enriched.metadata_status, requested_status)
+    if not all(source_results):
+        requested_status = "partial"
+    else:
+        requested_status = "enriched"
+    metadata_status = higher_metadata_status(enriched.metadata_status, requested_status)
     return replace(enriched, metadata_status=metadata_status)
 
 
@@ -95,15 +103,19 @@ def _fetch_json(
         params=params,
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         timeout=REQUEST_TIMEOUT_SECONDS,
+        follow_redirects=False,
     ) as response:
         response.raise_for_status()
         _reject_declared_oversize(response)
         content = bytearray()
         for chunk in response.iter_bytes():
             if len(content) + len(chunk) > MAX_METADATA_BYTES:
-                raise ValueError("metadata response exceeds maximum size")
+                raise EnrichmentResponseError("metadata response exceeds maximum size")
             content.extend(chunk)
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except (json.JSONDecodeError, RecursionError, UnicodeError) as exc:
+        raise EnrichmentResponseError("metadata response contains invalid JSON") from exc
 
 
 def _reject_declared_oversize(response: httpx.Response) -> None:
@@ -115,53 +127,79 @@ def _reject_declared_oversize(response: httpx.Response) -> None:
     except ValueError:
         return
     if declared_size > MAX_METADATA_BYTES:
-        raise ValueError("declared metadata response exceeds maximum size")
+        raise EnrichmentResponseError("declared metadata response exceeds maximum size")
 
 
 def _crossref_message(payload: Any) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
-        raise ValueError("Crossref response root must be an object")
+        raise EnrichmentResponseError("Crossref response root must be an object")
     message = payload.get("message")
     if not isinstance(message, Mapping):
-        raise ValueError("Crossref response message must be an object")
+        raise EnrichmentResponseError("Crossref response message must be an object")
     return message
 
 
-def _apply_crossref(article: ArticleRecord, message: Mapping[str, Any]) -> ArticleRecord:
+def _apply_crossref(
+    article: ArticleRecord, message: Mapping[str, Any]
+) -> tuple[ArticleRecord, tuple[str, ...]]:
+    contributed_fields: set[str] = set()
     title = article.title
     crossref_title = _crossref_title(message.get("title"))
     if _is_placeholder_title(title) and crossref_title is not None:
         title = crossref_title
+        contributed_fields.add("title")
 
     authors = article.authors
     crossref_authors = _crossref_authors(message.get("author"))
-    if _authors_are_low_quality(authors) and crossref_authors:
+    if (
+        _authors_are_low_quality(authors)
+        and crossref_authors
+        and not _authors_are_low_quality(crossref_authors)
+    ):
         authors = crossref_authors
+        contributed_fields.add("authors")
 
     abstract = article.abstract
     crossref_abstract = _clean_string(message.get("abstract"))
-    if _abstract_is_low_quality(abstract) and crossref_abstract is not None:
+    if (
+        _abstract_is_low_quality(abstract)
+        and crossref_abstract is not None
+        and not _abstract_is_low_quality(crossref_abstract)
+    ):
         abstract = crossref_abstract
+        contributed_fields.add("abstract")
 
     article_type = article.article_type
-    crossref_type = message.get("type")
-    if article_type.casefold() == "other" and isinstance(crossref_type, str):
-        article_type = normalize_article_type(crossref_type)
+    crossref_type = _clean_string(message.get("type"))
+    if article_type.casefold() == "other" and crossref_type is not None:
+        normalized_type = normalize_article_type(crossref_type)
+        if normalized_type != "other":
+            article_type = normalized_type
+            contributed_fields.add("article_type")
 
-    return replace(
-        article,
-        title=title,
-        authors=authors,
-        abstract=abstract,
-        article_type=article_type,
+    contributed = normalize_enriched_fields(contributed_fields)
+    return (
+        replace(
+            article,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            article_type=article_type,
+            enriched_fields=_with_enriched_fields(article, contributed),
+        ),
+        contributed,
     )
+
+
+def _with_enriched_fields(article: ArticleRecord, fields: Iterable[str]) -> tuple[str, ...]:
+    return normalize_enriched_fields((*article.enriched_fields, *fields))
 
 
 def _crossref_title(value: Any) -> str | None:
     candidates = value if isinstance(value, (list, tuple)) else (value,)
     for candidate in candidates:
         title = _clean_string(candidate)
-        if title is not None:
+        if title is not None and not _is_placeholder_title(title):
             return title
     return None
 
@@ -174,13 +212,17 @@ def _crossref_authors(value: Any) -> tuple[str, ...]:
     for row in value:
         if not isinstance(row, Mapping):
             continue
-        given = _clean_string(row.get("given"))
-        family = _clean_string(row.get("family"))
+        try:
+            given = _clean_string(row.get("given"))
+            family = _clean_string(row.get("family"))
+            organization = _clean_string(row.get("name"))
+        except EnrichmentResponseError:
+            continue
         if given is not None or family is not None:
             author = " ".join(part for part in (given, family) if part is not None)
         else:
-            author = _clean_string(row.get("name"))
-        if author is None:
+            author = organization
+        if author is None or not enriched_field_has_meaningful_value("authors", (author,)):
             continue
         identity = author.casefold()
         if identity in seen:
@@ -191,49 +233,56 @@ def _crossref_authors(value: Any) -> tuple[str, ...]:
 
 
 def _clean_string(value: Any) -> str | None:
-    return clean_text(value) if isinstance(value, str) else None
+    if not isinstance(value, str):
+        return None
+    try:
+        value.encode("utf-8")
+        return clean_text(value)
+    except (UnicodeError, ValueError) as exc:
+        raise EnrichmentResponseError("metadata response contains malformed text") from exc
 
 
 def _is_placeholder_title(value: str) -> bool:
     title = clean_text(value)
-    return title is None or title.casefold() == "untitled"
+    return not enriched_field_has_meaningful_value("title", title)
 
 
 def _authors_are_low_quality(authors: tuple[str, ...]) -> bool:
     cleaned = tuple(clean_text(author) for author in authors)
-    return not cleaned or all(
-        author is None or _placeholder_key(author) in _LOW_QUALITY_AUTHORS for author in cleaned
-    )
+    return not enriched_field_has_meaningful_value("authors", cleaned)
 
 
 def _abstract_is_low_quality(value: str | None) -> bool:
     abstract = clean_text(value)
-    return abstract is None or _placeholder_key(abstract) in _LOW_QUALITY_ABSTRACTS
+    return not enriched_field_has_meaningful_value("abstract", abstract)
 
 
-def _placeholder_key(value: str) -> str:
-    return value.casefold().strip(" \t\r\n.,:;!?")
-
-
-def _reasonable_email(value: str | None) -> str | None:
+def _optional_unpaywall_email(value: str | None) -> str | None:
+    if value is None:
+        return None
     if not isinstance(value, str):
+        raise ValueError("Unpaywall email must be a string or None")
+    if not value.strip():
         return None
-    email = value.strip()
-    if len(email) > 254 or _EMAIL_PATTERN.fullmatch(email) is None:
-        return None
-    return email
+    if value != value.strip() or len(value) > 254 or value.count("@") != 1:
+        raise ValueError("Unpaywall email must be a syntactically valid nonblank address")
+    local, domain = value.split("@")
+    labels = domain.split(".")
+    if (
+        len(local) > 64
+        or len(domain) > 253
+        or _EMAIL_LOCAL_PATTERN.fullmatch(local) is None
+        or len(labels) < 2
+        or any(_DNS_LABEL_PATTERN.fullmatch(label) is None for label in labels)
+    ):
+        raise ValueError("Unpaywall email must be a syntactically valid nonblank address")
+    return value
 
 
 def _unpaywall_is_oa(payload: Any) -> bool:
     if not isinstance(payload, Mapping):
-        raise ValueError("Unpaywall response root must be an object")
+        raise EnrichmentResponseError("Unpaywall response root must be an object")
     is_oa = payload.get("is_oa")
     if type(is_oa) is not bool:
-        raise ValueError("Unpaywall is_oa must be a boolean")
+        raise EnrichmentResponseError("Unpaywall is_oa must be a boolean")
     return is_oa
-
-
-def _higher_metadata_status(existing: str, requested: str) -> str:
-    if _METADATA_STATUS_RANK.get(existing, 0) >= _METADATA_STATUS_RANK[requested]:
-        return existing
-    return requested
