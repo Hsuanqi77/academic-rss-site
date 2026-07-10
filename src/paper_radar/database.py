@@ -266,6 +266,8 @@ def finish_run(
     failed: int,
     notes: str,
 ) -> None:
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+        raise ValueError("run id must be a positive integer")
     if status not in {"ok", "partial", "error"}:
         raise ValueError("run terminal status must be one of: ok, partial, error")
     counts = {
@@ -318,13 +320,17 @@ def _atomic(connection: sqlite3.Connection) -> Iterator[None]:
             connection.commit()
         else:
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-    except BaseException:
-        if owns_transaction:
-            if connection.in_transaction:
-                connection.rollback()
-        elif connection.in_transaction:
-            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except BaseException as original_error:
+        try:
+            if owns_transaction:
+                if connection.in_transaction:
+                    connection.rollback()
+            elif connection.in_transaction:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException as cleanup_error:
+            original_error.add_note(f"transaction cleanup failed: {cleanup_error}")
+            raise original_error from cleanup_error
         raise
 
 

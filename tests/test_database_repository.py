@@ -1185,6 +1185,45 @@ def test_nested_repository_operation_preserves_error_after_transaction_wide_roll
     assert connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 0
 
 
+def test_nested_cleanup_failure_keeps_original_repository_error_primary(tmp_path: Path) -> None:
+    class CleanupFailingConnection(sqlite3.Connection):
+        fail_cleanup = False
+
+        def execute(  # type: ignore[override]
+            self, sql: str, parameters: tuple[object, ...] = ()
+        ) -> sqlite3.Cursor:
+            if self.fail_cleanup and sql.startswith("ROLLBACK TO SAVEPOINT"):
+                raise RuntimeError("injected savepoint cleanup failure")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(
+        tmp_path / "cleanup.sqlite3",
+        factory=CleanupFailingConnection,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        database_module.initialize_database(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.fail_cleanup = True
+
+        with pytest.raises(RepositoryNotFoundError, match="missing") as captured:
+            mark_journal_status(
+                connection,
+                "missing",
+                status="error",
+                error="not found",
+            )
+
+        assert isinstance(captured.value.__cause__, RuntimeError)
+        assert "cleanup failure" in str(captured.value.__cause__)
+        assert any("cleanup failed" in note for note in captured.value.__notes__)
+    finally:
+        connection.fail_cleanup = False
+        if connection.in_transaction:
+            connection.rollback()
+        connection.close()
+
+
 def test_create_and_finish_run_lifecycle(
     connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1292,6 +1331,31 @@ def test_finish_run_rejects_missing_or_already_finished_run(
             failed=0,
             notes="again",
         )
+
+
+@pytest.mark.parametrize("run_id", [True, False, 1.5, "1", 0, -1])
+def test_finish_run_rejects_invalid_run_id_before_sql(
+    connection: sqlite3.Connection, run_id: object
+) -> None:
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(ValueError, match="positive integer"):
+            finish_run(
+                connection,
+                run_id,  # type: ignore[arg-type]
+                status="ok",
+                inserted=0,
+                updated=0,
+                skipped=0,
+                failed=0,
+                notes="",
+            )
+    finally:
+        connection.set_trace_callback(None)
+
+    assert statements == []
+    assert connection.in_transaction is False
 
 
 def test_run_creation_inside_outer_transaction_is_rolled_back_with_caller_work(
