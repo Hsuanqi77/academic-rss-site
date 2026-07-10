@@ -19,6 +19,7 @@ from paper_radar.database import (
     RepositoryNotFoundError,
     create_run,
     finish_run,
+    get_article,
     get_feed_state,
     mark_journal_status,
     register_journal,
@@ -91,6 +92,7 @@ def test_repository_api_is_importable() -> None:
         for function in (
             utc_now,
             register_journal,
+            get_article,
             get_feed_state,
             mark_journal_status,
             upsert_article,
@@ -103,6 +105,38 @@ def test_repository_api_is_importable() -> None:
     assert issubclass(RepositoryConflictError, Exception)
     assert issubclass(RepositoryNotFoundError, Exception)
     assert issubclass(RepositoryBusyError, Exception)
+
+
+def test_get_article_reconstructs_canonical_record_and_missing_returns_none(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    record = article(enriched_fields=("title", "authors", "abstract", "oa_status"))
+    assert upsert_article(connection, record) == "inserted"
+
+    assert get_article(connection, record.uid) == record
+    assert get_article(connection, "missing") is None
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("authors_json", "not-json", "stored authors contain invalid JSON"),
+        ("authors_json", '["Ada", 3]', "stored authors must contain only strings"),
+        ("enriched_fields_json", '["unsupported"]', "unsupported field"),
+    ],
+)
+def test_get_article_rejects_corrupt_json_and_provenance(
+    connection: sqlite3.Connection, column: str, value: str, message: str
+) -> None:
+    register_default_journal(connection)
+    record = article()
+    assert upsert_article(connection, record) == "inserted"
+    connection.execute(f"UPDATE articles SET {column} = ? WHERE uid = ?", (value, record.uid))
+    connection.commit()
+
+    with pytest.raises(RepositoryConflictError, match=message):
+        get_article(connection, record.uid)
 
 
 def test_utc_now_is_utc_iso_seconds() -> None:

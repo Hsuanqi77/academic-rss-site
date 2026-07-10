@@ -223,6 +223,34 @@ def resolve_article_uid(connection: sqlite3.Connection, article: ArticleRecord) 
     return ordered_rows[0]["uid"] if ordered_rows else None
 
 
+def get_article(connection: sqlite3.Connection, uid: str) -> ArticleRecord | None:
+    """Return the canonical persisted article, rejecting corrupt serialized fields."""
+
+    row = connection.execute("SELECT * FROM articles WHERE uid = ?", (uid,)).fetchone()
+    if row is None:
+        return None
+    authors = _authors_from_json(row["authors_json"])
+    if any(not isinstance(author, str) for author in authors):
+        raise RepositoryConflictError("stored authors must contain only strings")
+    enriched_fields = _stored_enriched_fields(row)
+    return ArticleRecord(
+        uid=row["uid"],
+        doi=row["doi"],
+        journal_id=row["journal_id"],
+        title=row["title"],
+        abstract=row["abstract"],
+        authors=tuple(authors),
+        published_at=row["published_at"],
+        article_type=row["article_type"],
+        article_url=row["article_url"],
+        normalized_url=row["normalized_url"],
+        oa_status=row["oa_status"],
+        source_feed_url=row["source_feed_url"],
+        metadata_status=row["metadata_status"],
+        enriched_fields=enriched_fields,
+    )
+
+
 def replace_article_tags(
     connection: sqlite3.Connection, article_uid: str, topics: Iterable[TopicConfig]
 ) -> None:

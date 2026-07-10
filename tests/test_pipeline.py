@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from dataclasses import FrozenInstanceError
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -16,7 +17,13 @@ from paper_radar.database import (
 )
 from paper_radar.feeds import FeedParseError
 from paper_radar.models import ArticleRecord, FeedFetchResult, RawFeedItem, RunSummary
-from paper_radar.pipeline import update_database
+from paper_radar.pipeline import (
+    ContractError,
+    PipelineConfigurationError,
+    PipelineContractError,
+    PipelineInvariantError,
+    update_database,
+)
 
 
 def _feed(feed_id: str, *, enabled: bool = True, host: str = "example.test") -> FeedConfig:
@@ -79,6 +86,8 @@ def test_run_summary_is_immutable_and_slotted() -> None:
     assert not hasattr(summary, "__dict__")
     with pytest.raises(FrozenInstanceError):
         summary.status = "partial"  # type: ignore[misc]
+
+    assert issubclass(PipelineContractError, ContractError)
 
 
 def test_good_and_bad_feeds_are_isolated_with_exact_persisted_summary(tmp_path: Path) -> None:
@@ -336,6 +345,306 @@ def test_tags_use_persisted_survivor_uid_after_url_only_to_doi_transition(
     assert (article["uid"], article["doi"]) == (original_uid, "10.1000/stable")
     tag_link = _rows(database_path, "SELECT article_uid, tag_id FROM article_tags")[0]
     assert (tag_link["article_uid"], tag_link["tag_id"]) == (original_uid, "second-tag")
+
+
+def test_classification_uses_canonical_merged_article(tmp_path: Path) -> None:
+    database_path = tmp_path / "radar.db"
+    feed = _feed("feed")
+    titles = iter(("SAW article", "Untitled"))
+
+    def fetcher(*args: object, **kwargs: object) -> FeedFetchResult:
+        return _result((next(titles), "https://example.test/stable"))
+
+    first = update_database(
+        database_path,
+        [feed],
+        [_topic()],
+        fetcher=fetcher,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+    second = update_database(
+        database_path,
+        [feed],
+        [_topic()],
+        fetcher=fetcher,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+
+    assert (first.inserted, second.skipped) == (1, 1)
+    assert _rows(database_path, "SELECT tag_id FROM article_tags")[0]["tag_id"] == "saw"
+
+
+def test_classification_sees_abstract_merged_by_upsert(tmp_path: Path) -> None:
+    database_path = tmp_path / "radar.db"
+    feed = _feed("feed")
+    calls = 0
+
+    def enricher(client: httpx.Client, record: ArticleRecord, **kwargs: object) -> ArticleRecord:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return record
+        return replace(
+            record,
+            abstract="A SAW result",
+            metadata_status="enriched",
+            enriched_fields=("abstract",),
+        )
+
+    for _ in range(2):
+        update_database(
+            database_path,
+            [feed],
+            [_topic()],
+            fetcher=lambda *args, **kwargs: _result(("Untitled", "https://example.test/stable")),
+            enricher=enricher,
+            min_interval=0,
+        )
+
+    assert _rows(database_path, "SELECT tag_id FROM article_tags")[0]["tag_id"] == "saw"
+
+
+def test_missing_canonical_article_is_a_programming_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline_module, "get_article", lambda *args: None)
+
+    with pytest.raises(PipelineInvariantError, match="canonical persisted article"):
+        update_database(
+            tmp_path / "radar.db",
+            [_feed("feed")],
+            [],
+            fetcher=lambda *args, **kwargs: _result(("Article", "https://example.test/article")),
+            enricher=_identity_enricher,
+            min_interval=0,
+        )
+
+
+def test_partial_feed_does_not_advance_validators_and_next_run_repairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    feed = _feed("feed")
+    observed: list[tuple[str | None, str | None]] = []
+    run_number = 0
+
+    def fetcher(
+        client: httpx.Client,
+        current_feed: FeedConfig,
+        *,
+        etag: str | None,
+        last_modified: str | None,
+    ) -> FeedFetchResult:
+        nonlocal run_number
+        observed.append((etag, last_modified))
+        run_number += 1
+        return _result()
+
+    bad = RawFeedItem(feed.id, feed.feed_url, "Bad", "mailto:bad", None, None, (), None, None)
+    good = RawFeedItem(
+        feed.id,
+        feed.feed_url,
+        "Good SAW",
+        "https://example.test/good",
+        None,
+        None,
+        (),
+        None,
+        None,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "parse_feed_bytes",
+        lambda *args, **kwargs: [bad] if run_number == 1 else [good],
+    )
+
+    first = update_database(
+        database_path,
+        [feed],
+        [_topic()],
+        fetcher=fetcher,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+    second = update_database(
+        database_path,
+        [feed],
+        [_topic()],
+        fetcher=fetcher,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+
+    assert (first.status, second.status) == ("partial", "ok")
+    assert observed == [(None, None), (None, None)]
+    journal = _rows(database_path, "SELECT etag, last_status FROM journals")[0]
+    assert (journal["etag"], journal["last_status"]) == ('"new"', "ok")
+    assert _rows(database_path, "SELECT tag_id FROM article_tags")[0]["tag_id"] == "saw"
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value"),
+    [
+        ("fetcher", None),
+        ("enricher", 3),
+        ("sleeper", "sleep"),
+        ("clock", object()),
+        ("client", object()),
+        ("min_interval", -0.1),
+    ],
+)
+def test_invalid_pipeline_configuration_fails_before_database_creation(
+    tmp_path: Path, keyword: str, value: object
+) -> None:
+    database_path = tmp_path / "radar.db"
+    kwargs: dict[str, object] = {keyword: value}
+
+    with pytest.raises(PipelineConfigurationError):
+        update_database(database_path, [], [], **kwargs)  # type: ignore[arg-type]
+
+    assert not database_path.exists()
+
+
+@pytest.mark.parametrize("callback", ["fetcher", "enricher"])
+def test_callback_wrong_signature_is_contract_error_not_feed_isolation(
+    tmp_path: Path, callback: str
+) -> None:
+    database_path = tmp_path / "radar.db"
+
+    def wrong_signature() -> object:
+        return object()
+
+    kwargs: dict[str, object] = {
+        "fetcher": lambda *args, **kwargs: _result(("Article", "https://example.test/article")),
+        "enricher": _identity_enricher,
+        callback: wrong_signature,
+    }
+    with pytest.raises(PipelineContractError, match=callback):
+        update_database(database_path, [_feed("feed")], [], min_interval=0, **kwargs)  # type: ignore[arg-type]
+
+    assert not database_path.exists()
+
+
+def test_fetcher_and_enricher_return_contracts_bypass_isolation(tmp_path: Path) -> None:
+    with pytest.raises(PipelineContractError, match="fetcher.*FeedFetchResult"):
+        update_database(
+            tmp_path / "fetch.db",
+            [_feed("feed")],
+            [],
+            fetcher=lambda *args, **kwargs: object(),  # type: ignore[arg-type]
+            min_interval=0,
+        )
+
+    with pytest.raises(PipelineContractError, match="enricher.*ArticleRecord"):
+        update_database(
+            tmp_path / "enrich.db",
+            [_feed("feed")],
+            [],
+            fetcher=lambda *args, **kwargs: _result(("Article", "https://example.test/article")),
+            enricher=lambda *args, **kwargs: object(),  # type: ignore[arg-type]
+            min_interval=0,
+        )
+
+
+def test_terminal_write_retries_once_and_does_not_double_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    original_finish = pipeline_module.finish_run
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_finish(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("busy")
+        original_finish(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_module, "finish_run", flaky_finish)
+    summary = update_database(
+        database_path,
+        [],
+        [],
+        sleeper=sleeps.append,
+        min_interval=0,
+    )
+
+    assert summary.status == "error"
+    assert attempts == 2
+    assert len(sleeps) == 1
+    assert _rows(database_path, "SELECT status FROM runs_log")[0]["status"] == "error"
+
+
+def test_exhausted_normal_finish_uses_one_error_finalization_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    original_finish = pipeline_module.finish_run
+    attempts = 0
+
+    def fail_normal_then_finalize(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            raise sqlite3.OperationalError("busy")
+        original_finish(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_module, "finish_run", fail_normal_then_finalize)
+    with pytest.raises(sqlite3.OperationalError, match="busy"):
+        update_database(database_path, [], [], sleeper=lambda seconds: None, min_interval=0)
+
+    assert attempts == 4
+    assert _rows(database_path, "SELECT status FROM runs_log")[0]["status"] == "error"
+
+
+def test_successful_terminal_write_is_called_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_finish = pipeline_module.finish_run
+    attempts = 0
+
+    def counting_finish(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        original_finish(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_module, "finish_run", counting_finish)
+    update_database(tmp_path / "radar.db", [], [], min_interval=0)
+
+    assert attempts == 1
+
+
+def test_primary_error_is_preserved_when_all_finalization_retries_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    attempts = 0
+
+    def unavailable_finish(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise sqlite3.OperationalError("busy")
+
+    monkeypatch.setattr(pipeline_module, "finish_run", unavailable_finish)
+    primary = KeyboardInterrupt("stop")
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        update_database(
+            database_path,
+            [_feed("feed")],
+            [],
+            fetcher=lambda *args, **kwargs: (_ for _ in ()).throw(primary),
+            sleeper=lambda seconds: None,
+            min_interval=0,
+        )
+
+    assert captured.value is primary
+    assert attempts == 3
+    assert any("could not be finalized" in note for note in captured.value.__notes__)
+    assert _rows(database_path, "SELECT status FROM runs_log")[0]["status"] == "running"
 
 
 @pytest.mark.parametrize("exception", [AssertionError("bug"), KeyboardInterrupt()])
