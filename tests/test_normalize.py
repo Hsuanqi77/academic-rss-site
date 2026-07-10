@@ -69,7 +69,8 @@ def test_clean_text_returns_none_for_empty_input() -> None:
             "10.1002/(SICI)1097-0312(199707)50:7<601::AID-CPA5>3.0.CO;2-L",
             "10.1002/(sici)1097-0312(199707)50:7<601::aid-cpa5>3.0.co;2-l",
         ),
-        ("10.1234/example(a).,", "10.1234/example(a)"),
+        ("10.1234/example(a).,", "10.1234/example(a).,"),
+        ("10.1234/foo..", "10.1234/foo.."),
         ("10.1234/a+b=c@d", "10.1234/a+b=c@d"),
     ],
 )
@@ -94,6 +95,22 @@ def test_normalize_doi_canonicalizes_complete_dois(value: str, expected: str) ->
 )
 def test_normalize_doi_rejects_incomplete_or_non_doi_values(value: str | None) -> None:
     assert normalize_doi(value) is None
+
+
+def test_normalize_doi_folds_ascii_case_without_folding_non_ascii() -> None:
+    assert normalize_doi("10.1234/ABC") == normalize_doi("10.1234/abc")
+    assert normalize_doi("10.1234/Á") == "10.1234/Á"
+    assert normalize_doi("10.1234/á") == "10.1234/á"
+    assert normalize_doi("10.1234/Á") != normalize_doi("10.1234/á")
+
+
+def test_normalize_doi_does_not_apply_unicode_normalization() -> None:
+    assert normalize_doi("10.1234/é") != normalize_doi("10.1234/e\u0301")
+
+
+def test_normalize_doi_repairs_resolver_punctuation_without_changing_explicit_doi() -> None:
+    assert normalize_doi("10.1234/foo..") == "10.1234/foo.."
+    assert normalize_doi("https://doi.org/10.1234/foo..") == "10.1234/foo"
 
 
 @pytest.mark.parametrize(
@@ -223,6 +240,18 @@ def test_make_uid_prefers_canonical_doi_over_url() -> None:
     )
 
     assert uid == "doi:10.1000/abc"
+
+
+def test_make_uid_uses_ascii_only_doi_equivalence_and_preserves_explicit_dots() -> None:
+    assert make_uid("10.1234/ABC", None, "journal", "Title", None) == make_uid(
+        "10.1234/abc", None, "journal", "Title", None
+    )
+    assert make_uid("10.1234/Á", None, "journal", "Title", None) != make_uid(
+        "10.1234/á", None, "journal", "Title", None
+    )
+    assert make_uid("10.1234/foo..", None, "journal", "Title", None) != make_uid(
+        "10.1234/foo", None, "journal", "Title", None
+    )
 
 
 def test_make_uid_uses_stable_normalized_url_hash() -> None:
@@ -479,6 +508,29 @@ def test_parse_and_normalize_preserve_explicit_dot_without_resolver_collision() 
     assert records[0].uid == "doi:10.1234/explicit."
     assert records[1].uid == "doi:10.1234/explicit"
     assert records[0].uid != records[1].uid
+
+
+def test_parse_then_normalize_keeps_explicit_unicode_case_and_repeated_dots_distinct() -> None:
+    feed = make_feed()
+    candidates = ("10.1234/Á", "10.1234/á", "10.1234/foo..", "10.1234/foo")
+    items = "".join(
+        f"""
+          <item>
+            <title>{index}</title>
+            <link>https://example.org/doi-{index}</link>
+            <guid isPermaLink="false">{candidate}</guid>
+          </item>
+        """
+        for index, candidate in enumerate(candidates)
+    )
+    content = f'<rss version="2.0"><channel><title>Fixture</title>{items}</channel></rss>'.encode()
+
+    raw_items = parse_feed(content, feed.id, feed.feed_url)
+    records = [normalize_item(item, feed) for item in raw_items]
+
+    assert [item.doi for item in raw_items] == list(candidates)
+    assert [record.doi for record in records] == list(candidates)
+    assert len({record.uid for record in records}) == len(candidates)
 
 
 def test_parse_and_normalize_strip_publisher_path_and_html_prose_punctuation() -> None:

@@ -12,6 +12,10 @@ _DOI_LABEL_PATTERN = re.compile(r"^doi\s*:\s*", re.IGNORECASE)
 _DOI_RESOLVER_HOSTS = {"doi.org", "dx.doi.org"}
 _DOI_DELIMITERS = {"(": ")", "<": ">", "[": "]", "{": "}"}
 _DOI_PROSE_PUNCTUATION = ".,!?\"'"
+_ASCII_CASE_FOLD = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
 
 
 def normalize_doi(
@@ -65,7 +69,7 @@ def normalize_doi(
         candidate = _strip_explicit_suffix(candidate)
     if not _is_complete_doi(candidate):
         return None
-    return candidate.lower() if lowercase else candidate
+    return candidate.translate(_ASCII_CASE_FOLD) if lowercase else candidate
 
 
 def _parsed_url(value: str):
@@ -101,15 +105,15 @@ def _strip_free_text_suffix(candidate: str) -> str:
 
 def _strip_explicit_suffix(candidate: str) -> str:
     candidate = candidate.strip()
+    if _is_complete_doi(candidate):
+        return candidate
+
     unmatched_index = _first_unmatched_closing_index(candidate)
     if unmatched_index is not None:
         removable = set(_DOI_PROSE_PUNCTUATION) | set(_DOI_DELIMITERS.values())
         if set(candidate[unmatched_index:]) <= removable:
             return candidate[:unmatched_index].rstrip(_DOI_PROSE_PUNCTUATION)
 
-    punctuation_run = len(candidate) - len(candidate.rstrip(_DOI_PROSE_PUNCTUATION))
-    if punctuation_run > 1:
-        candidate = candidate[:-punctuation_run]
     return candidate
 
 
