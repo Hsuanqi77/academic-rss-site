@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import paper_radar.database as database_module
 from paper_radar.database import SCHEMA_PATH, connect_database, initialize_database
 
 
@@ -22,7 +23,7 @@ def insert_article(
     connection: sqlite3.Connection,
     *,
     uid: str,
-    journal_id: str = "journal-1",
+    journal_id: str | None = "journal-1",
     doi: str | None = None,
     normalized_url: str | None = None,
 ) -> None:
@@ -110,6 +111,56 @@ def test_initialize_database_is_idempotent_and_preserves_data(tmp_path: Path) ->
             "feed_url": "https://example.com/feed.xml",
         }
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.in_transaction is False
+    finally:
+        connection.close()
+
+
+def test_initialize_database_rejects_and_preserves_pending_transaction(tmp_path: Path) -> None:
+    connection = connect_database(tmp_path / "paper-radar.sqlite3")
+    try:
+        initialize_database(connection)
+        insert_journal(connection)
+        assert connection.in_transaction is True
+
+        with pytest.raises(RuntimeError, match="pending transaction"):
+            initialize_database(connection)
+
+        assert connection.in_transaction is True
+        assert connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 1
+        connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_initialize_database_rolls_back_partial_schema_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing_schema = tmp_path / "failing-schema.sql"
+    failing_schema.write_text(
+        """
+CREATE TABLE partial_table (id INTEGER PRIMARY KEY);
+PRAGMA user_version = 1;
+CREATE TABL invalid_syntax (id INTEGER PRIMARY KEY);
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(database_module, "SCHEMA_PATH", failing_schema)
+    connection = connect_database(tmp_path / "paper-radar.sqlite3")
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            initialize_database(connection)
+
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        assert tables == set()
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert connection.in_transaction is False
     finally:
         connection.close()
 
@@ -137,6 +188,7 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
         assert tables == {"sentinel"}
         assert connection.execute("SELECT value FROM sentinel").fetchone()[0] == "preserve me"
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.in_transaction is False
     finally:
         connection.close()
 
@@ -274,6 +326,18 @@ def test_schema_enforces_required_values_and_checks(tmp_path: Path) -> None:
         connection.close()
 
 
+def test_articles_require_a_journal_id(tmp_path: Path) -> None:
+    connection = connect_database(tmp_path / "paper-radar.sqlite3")
+    try:
+        initialize_database(connection)
+        insert_journal(connection)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_article(connection, uid="missing-journal-id", journal_id=None)
+    finally:
+        connection.close()
+
+
 def test_text_primary_keys_reject_null_values(tmp_path: Path) -> None:
     connection = connect_database(tmp_path / "paper-radar.sqlite3")
     try:
@@ -284,15 +348,18 @@ def test_text_primary_keys_reject_null_values(tmp_path: Path) -> None:
                 "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
                 (None, "Missing ID", "nature", "https://example.com/missing-id.xml"),
             )
+        insert_journal(connection)
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
                 INSERT INTO articles (
-                    uid, title, article_url, source_feed_url, first_seen_at, last_updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    uid, journal_id, title, article_url, source_feed_url,
+                    first_seen_at, last_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     None,
+                    "journal-1",
                     "Missing ID",
                     "https://example.com/missing-id",
                     "https://example.com/feed.xml",

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS journals (
 CREATE TABLE IF NOT EXISTS articles (
     uid TEXT NOT NULL PRIMARY KEY,
     doi TEXT,
-    journal_id TEXT REFERENCES journals(id),
+    journal_id TEXT NOT NULL REFERENCES journals(id),
     title TEXT NOT NULL,
     abstract TEXT,
     authors_json TEXT NOT NULL DEFAULT '[]',
