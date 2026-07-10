@@ -1,5 +1,7 @@
 export const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+const MAX_SELECTED_TAGS = 32;
+const MAX_TAG_LENGTH = 128;
 const SQLITE_HEADER = new TextEncoder().encode("SQLite format 3\0");
 
 function rowsFromStatement(statement, params = null) {
@@ -74,8 +76,22 @@ function escapeLike(value) {
 }
 
 function selectedTags(tags) {
-  if (!Array.isArray(tags)) return [];
-  return [...new Set(tags.filter((tag) => typeof tag === "string" && tag.length > 0))];
+  if (tags === undefined || tags === null) return [];
+  if (!Array.isArray(tags)) throw new TypeError("主题标签必须是数组。");
+  if (tags.length > MAX_SELECTED_TAGS) throw new RangeError("主题标签最多 32 个。");
+  const selected = [];
+  const seen = new Set();
+  for (const value of tags) {
+    if (typeof value !== "string") throw new TypeError("每个主题标签必须是字符串。");
+    const tag = value.trim();
+    if (!tag) throw new TypeError("主题标签不能为空。");
+    if (tag.length > MAX_TAG_LENGTH) throw new RangeError("主题标签不能超过 128 个字符。");
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      selected.push(tag);
+    }
+  }
+  return selected;
 }
 
 export function buildArticleQuery(state = {}) {
@@ -83,10 +99,10 @@ export function buildArticleQuery(state = {}) {
   const params = {};
   if (typeof state.query === "string" && state.query) {
     clauses.push(
-      `LOWER(COALESCE(a.title, '') || ' ' || COALESCE(a.abstract, '') || ' '
+      `(COALESCE(a.title, '') || ' ' || COALESCE(a.abstract, '') || ' '
        || COALESCE(a.doi, '')) LIKE :search ESCAPE '\\'`,
     );
-    params[":search"] = `%${escapeLike(state.query.toLowerCase())}%`;
+    params[":search"] = `%${escapeLike(state.query)}%`;
   }
   if (state.from) {
     clauses.push("DATE(a.published_at) >= :from");
@@ -123,8 +139,8 @@ export function buildArticleQuery(state = {}) {
     params[key] = tag;
   });
   const orderBy = state.sort === "oldest"
-    ? "a.published_at ASC, a.uid ASC"
-    : "a.published_at DESC, a.uid DESC";
+    ? "(a.published_at IS NULL) ASC, a.published_at ASC, a.uid ASC"
+    : "(a.published_at IS NULL) ASC, a.published_at DESC, a.uid DESC";
   return {
     where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
     params,
@@ -168,10 +184,10 @@ export function queryArticles(db, state = {}, options = {}) {
   const rows = selectRows(
     db,
     `SELECT a.*, j.name AS journal_name, j.publisher,
-       (SELECT GROUP_CONCAT(t.id, '|||')
+       (SELECT GROUP_CONCAT(t.id, '|||' ORDER BY t.id)
         FROM article_tags AS linked_ids JOIN tags AS t ON t.id = linked_ids.tag_id
         WHERE linked_ids.article_uid = a.uid) AS tag_ids,
-       (SELECT GROUP_CONCAT(t.label, '|||')
+       (SELECT GROUP_CONCAT(t.label, '|||' ORDER BY t.id)
         FROM article_tags AS linked_labels JOIN tags AS t ON t.id = linked_labels.tag_id
         WHERE linked_labels.article_uid = a.uid) AS tag_labels
      FROM articles AS a
