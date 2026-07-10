@@ -2,6 +2,8 @@ import re
 import zlib
 from collections.abc import Mapping
 from html.parser import HTMLParser
+from queue import Empty, Queue
+from threading import Event, Thread
 from time import monotonic
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
@@ -49,27 +51,33 @@ class _PlainTextHTMLParser(HTMLParser):
 
 class _DeflateDecoder:
     def __init__(self) -> None:
-        self._decoder = zlib.decompressobj(zlib.MAX_WBITS)
-        self._first_chunk = True
+        self._decoder = None
+        self._prefix = bytearray()
 
     def decompress(self, data: bytes, max_output: int) -> bytes:
-        try:
-            output = self._decoder.decompress(data, max_output)
-        except zlib.error:
-            if not self._first_chunk:
-                raise
-            self._decoder = zlib.decompressobj(-zlib.MAX_WBITS)
-            output = self._decoder.decompress(data, max_output)
-        self._first_chunk = False
-        return output
+        if self._decoder is None:
+            needed = 2 - len(self._prefix)
+            self._prefix.extend(data[:needed])
+            data = data[needed:]
+            if len(self._prefix) < 2:
+                return b""
+            cmf, flg = self._prefix
+            has_zlib_header = (
+                cmf & 0x0F == zlib.DEFLATED and cmf >> 4 <= 7 and (cmf << 8 | flg) % 31 == 0
+            )
+            wbits = zlib.MAX_WBITS if has_zlib_header else -zlib.MAX_WBITS
+            self._decoder = zlib.decompressobj(wbits)
+            data = bytes(self._prefix) + data
+            self._prefix.clear()
+        return self._decoder.decompress(data, max_output)
 
     @property
     def unconsumed_tail(self) -> bytes:
-        return self._decoder.unconsumed_tail
+        return b"" if self._decoder is None else self._decoder.unconsumed_tail
 
     @property
     def eof(self) -> bool:
-        return self._decoder.eof
+        return False if self._decoder is None else self._decoder.eof
 
 
 def parse_feed(
@@ -173,16 +181,19 @@ def fetch_feed(
 
     started_at = monotonic()
     current_url = httpx.URL(feed.feed_url)
+    if current_url.scheme != "https":
+        raise FeedFetchError(f"initial feed URL must use HTTPS: {current_url}")
     redirect_count = 0
     while True:
         timeout_extensions = _request_timeout_extensions(started_at, current_url)
-        with client.stream(
+        request = client.build_request(
             "GET",
             current_url,
             headers=headers,
             extensions={"timeout": timeout_extensions},
-            follow_redirects=False,
-        ) as response:
+        )
+        response = _send_request_with_deadline(client, request, started_at)
+        try:
             if response.status_code in _REDIRECT_STATUS_CODES:
                 location = response.headers.get("Location")
                 if location is None:
@@ -224,6 +235,70 @@ def fetch_feed(
                 not_modified=False,
                 effective_url=str(response.url),
             )
+        finally:
+            response.close()
+
+
+def _send_request_with_deadline(
+    client: httpx.Client,
+    request: httpx.Request,
+    started_at: float,
+) -> httpx.Response:
+    results: Queue[httpx.Response | BaseException] = Queue(maxsize=1)
+    remaining = _remaining_fetch_seconds(started_at, request.url)
+    cancelled = Event()
+
+    def send() -> None:
+        try:
+            response = client.send(request, stream=True, follow_redirects=False)
+        except BaseException as exc:
+            results.put(exc)
+        else:
+            if cancelled.is_set():
+                response.close()
+                return
+            results.put(response)
+            if cancelled.is_set():
+                _close_queued_response(results)
+
+    Thread(target=send, daemon=True).start()
+    try:
+        result = results.get(timeout=remaining)
+    except Empty as exc:
+        cancelled.set()
+        _abort_client_transport(client, request.url)
+        _close_queued_response(results)
+        raise FeedFetchError(
+            f"total fetch deadline of {FETCH_DEADLINE_SECONDS:g} seconds exceeded while "
+            f"waiting for response headers: {request.url}"
+        ) from exc
+
+    if isinstance(result, BaseException):
+        raise result
+    try:
+        _enforce_fetch_deadline(started_at, result.url)
+    except FeedFetchError:
+        result.close()
+        _abort_client_transport(client, request.url)
+        raise
+    return result
+
+
+def _close_queued_response(results: Queue[httpx.Response | BaseException]) -> None:
+    try:
+        result = results.get_nowait()
+    except Empty:
+        return
+    if isinstance(result, httpx.Response):
+        result.close()
+
+
+def _abort_client_transport(client: httpx.Client, url: httpx.URL) -> None:
+    try:
+        transport = client._transport_for_url(url)  # type: ignore[attr-defined]
+        transport.close()
+    except Exception:
+        pass
 
 
 def _reject_declared_oversize(response: httpx.Response) -> None:

@@ -1,6 +1,9 @@
 from dataclasses import FrozenInstanceError
 import gzip
 from pathlib import Path
+import socket
+from threading import Event, Thread
+from time import perf_counter
 from types import SimpleNamespace
 import zlib
 
@@ -610,6 +613,30 @@ def test_fetch_feed_rejects_final_http_url_after_redirect() -> None:
     assert insecure_route.called is False
 
 
+def test_fetch_feed_rejects_initial_http_url_before_request() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=b"<rss />")
+
+    insecure_feed = FeedConfig(
+        id="insecure",
+        name="Insecure Feed",
+        publisher="nature",
+        feed_url="http://insecure.example.org/feed.xml",
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            feeds_module.FeedFetchError,
+            match="initial feed URL must use HTTPS",
+        ):
+            fetch_feed(client, insecure_feed)
+
+    assert calls == 0
+
+
 def test_fetch_feed_rejects_intermediate_http_redirect_before_requesting_it() -> None:
     insecure_url = "http://insecure.example.org/intermediate.xml"
     final_url = "https://cdn.example.org/final.xml"
@@ -742,7 +769,7 @@ def test_fetch_feed_rejects_oversized_decoded_stream(
 def test_fetch_feed_enforces_total_elapsed_deadline_without_sleeping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    times = iter([100.0, 100.5, 102.0])
+    times = iter([100.0, 100.2, 100.3, 102.0])
     monkeypatch.setattr(feeds_module, "monotonic", lambda: next(times, 102.0), raising=False)
     monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 1.0, raising=False)
     stream = TrackingStream([b"<rss />"])
@@ -779,15 +806,44 @@ def test_fetch_feed_rejects_unsupported_content_encoding_before_streaming() -> N
     assert stream.closed is True
 
 
-def test_fetch_feed_decodes_raw_deflate_with_bounded_fallback() -> None:
+@pytest.mark.parametrize("boundary", [1, 2, 3, 5])
+def test_fetch_feed_decodes_raw_deflate_across_arbitrary_chunk_boundaries(
+    boundary: int,
+) -> None:
     compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
     encoded = compressor.compress(b"<rss />") + compressor.flush()
-    stream = TrackingStream([encoded])
+    stream = TrackingStream([encoded[:boundary], encoded[boundary:]])
     with respx.mock:
         respx.get("https://example.org/feed.xml").mock(
             return_value=httpx.Response(
                 200,
                 headers={"Content-Encoding": "deflate"},
+                stream=stream,
+            )
+        )
+        with httpx.Client() as client:
+            result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+
+
+@pytest.mark.parametrize(
+    ("content_encoding", "encoded"),
+    [
+        ("deflate", zlib.compress(b"<rss />")),
+        ("gzip", gzip.compress(b"<rss />")),
+    ],
+)
+def test_fetch_feed_decodes_wrapped_compression_regressions(
+    content_encoding: str,
+    encoded: bytes,
+) -> None:
+    stream = TrackingStream([encoded[:1], encoded[1:]])
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"Content-Encoding": content_encoding},
                 stream=stream,
             )
         )
@@ -870,3 +926,95 @@ def test_fetch_feed_propagates_decreasing_remaining_timeouts_without_sleeping(
     assert read_timeouts
     assert all(timeout <= 1.0 for timeout in read_timeouts)
     assert read_timeouts == sorted(read_timeouts, reverse=True)
+
+
+def test_send_request_absolute_deadline_aborts_slow_drip_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = getattr(feeds_module, "_send_request_with_deadline", None)
+    assert sender is not None, "absolute-deadline request wrapper is required"
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(1.0)
+    stop = Event()
+
+    def serve_slow_headers() -> None:
+        try:
+            connection, _ = listener.accept()
+        except (OSError, TimeoutError):
+            return
+        with connection:
+            connection.settimeout(1.0)
+            request = bytearray()
+            try:
+                while b"\r\n\r\n" not in request:
+                    request.extend(connection.recv(4096))
+                connection.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                while not stop.wait(0.02):
+                    connection.sendall(b"a")
+            except OSError:
+                pass
+
+    server_thread = Thread(target=serve_slow_headers, daemon=True)
+    server_thread.start()
+    monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 0.15)
+    url = httpx.URL(f"http://127.0.0.1:{listener.getsockname()[1]}/feed.xml")
+    started_at = feeds_module.monotonic()
+    wall_started = perf_counter()
+    try:
+        with httpx.Client() as client:
+            request = client.build_request(
+                "GET",
+                url,
+                extensions={
+                    "timeout": {
+                        "connect": 1.0,
+                        "read": 1.0,
+                        "write": 1.0,
+                        "pool": 1.0,
+                    }
+                },
+            )
+            with pytest.raises(feeds_module.FeedFetchError, match="total fetch deadline"):
+                sender(client, request, started_at)
+    finally:
+        stop.set()
+        listener.close()
+        server_thread.join(timeout=1.0)
+
+    assert perf_counter() - wall_started < 0.75
+
+
+def test_header_deadline_closes_response_returned_late_by_custom_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = Event()
+    release = Event()
+    closed = Event()
+
+    class LateStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"<rss />"
+
+        def close(self) -> None:
+            closed.set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        release.wait(timeout=1.0)
+        return httpx.Response(200, stream=LateStream())
+
+    monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 0.05)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(feeds_module.FeedFetchError, match="total fetch deadline"):
+            fetch_feed(client, make_feed())
+        assert entered.is_set()
+        release.set()
+        assert closed.wait(timeout=0.5)
+    finally:
+        release.set()
+        client.close()
