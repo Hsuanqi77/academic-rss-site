@@ -1,4 +1,3 @@
-import re
 import zlib
 from collections.abc import Mapping
 from html.parser import HTMLParser
@@ -6,12 +5,13 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from time import monotonic
 from typing import Any
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import urljoin
 
 import feedparser
 import httpx
 
 from paper_radar.config import FeedConfig
+from paper_radar.identifiers import normalize_doi
 from paper_radar.models import FeedFetchResult, RawFeedItem
 
 
@@ -24,11 +24,6 @@ DECODE_CHUNK_BYTES = 64 * 1024
 MAX_REDIRECTS = 5
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _SUPPORTED_CONTENT_ENCODINGS = {"", "identity", "gzip", "deflate"}
-_DOI_PREFIX_PATTERN = re.compile(r"10\.\d{4,9}/", re.IGNORECASE)
-_DOI_LABEL_PATTERN = re.compile(r"^doi\s*:\s*", re.IGNORECASE)
-_DOI_PROSE_PUNCTUATION = ".,!?\"'"
-_DOI_DELIMITERS = {"(": ")", "<": ">", "[": "]", "{": "}"}
-_DOI_RESOLVER_HOSTS = {"doi.org", "dx.doi.org"}
 _SUPPORTED_FEED_VERSIONS = {"atom10", "rss10", "rss20"}
 
 
@@ -592,12 +587,12 @@ def _extract_doi(entry: Mapping[str, Any], summary: str | None, link: str) -> st
         entry.get("id"),
         entry.get("guid"),
     ):
-        doi = _normalize_doi(candidate, free_text=False)
+        doi = normalize_doi(candidate, source="explicit", lowercase=False)
         if doi is not None:
             return doi
 
     summary_text = _html_to_plain_text(summary)
-    doi = _normalize_doi(summary_text, free_text=True)
+    doi = normalize_doi(summary_text, source="free_text", lowercase=False)
     return doi if doi is not None else _extract_doi_from_link(link)
 
 
@@ -611,95 +606,4 @@ def _html_to_plain_text(value: str | None) -> str | None:
 
 
 def _extract_doi_from_link(link: str) -> str | None:
-    parsed_url = urlsplit(link)
-    path = unquote(parsed_url.path)
-    return _normalize_doi(path, free_text=True)
-
-
-def _normalize_doi(value: Any, *, free_text: bool) -> str | None:
-    candidate = _text(value)
-    if candidate is None:
-        return None
-
-    parsed_url = urlsplit(candidate)
-    is_resolver = (
-        parsed_url.scheme.lower() in {"http", "https"}
-        and parsed_url.hostname in _DOI_RESOLVER_HOSTS
-    )
-    if is_resolver:
-        candidate = unquote(parsed_url.path.lstrip("/"))
-    else:
-        candidate = _DOI_LABEL_PATTERN.sub("", candidate, count=1)
-        match = _DOI_PREFIX_PATTERN.search(candidate)
-        if match is None:
-            return None
-        if free_text:
-            candidate = candidate[match.start() :].split(maxsplit=1)[0]
-        elif match.start() > 0:
-            return None
-
-    candidate = _strip_unmatched_prose_delimiters(
-        candidate,
-        free_text=free_text and not is_resolver,
-    )
-    if not _is_complete_doi(candidate):
-        return None
-    return candidate
-
-
-def _strip_unmatched_prose_delimiters(candidate: str, *, free_text: bool) -> str:
-    candidate = candidate.strip()
-    if free_text:
-        closing_to_opening = {closing: opening for opening, closing in _DOI_DELIMITERS.items()}
-        while candidate:
-            if candidate[-1] in _DOI_PROSE_PUNCTUATION:
-                candidate = candidate[:-1]
-                continue
-            closing = candidate[-1]
-            opening = closing_to_opening.get(closing)
-            if opening is not None and candidate.count(closing) > candidate.count(opening):
-                candidate = candidate[:-1]
-                continue
-            break
-        return candidate
-
-    unmatched_index = _first_unmatched_closing_index(candidate)
-    if unmatched_index is not None:
-        removable = set(_DOI_PROSE_PUNCTUATION) | set(_DOI_DELIMITERS.values())
-        if set(candidate[unmatched_index:]) <= removable:
-            candidate = candidate[:unmatched_index].rstrip(_DOI_PROSE_PUNCTUATION)
-    return candidate
-
-
-def _first_unmatched_closing_index(candidate: str) -> int | None:
-    stack: list[str] = []
-    closing_to_opening = {closing: opening for opening, closing in _DOI_DELIMITERS.items()}
-    for index, character in enumerate(candidate):
-        if character in _DOI_DELIMITERS:
-            stack.append(character)
-        elif character in closing_to_opening:
-            if not stack or stack[-1] != closing_to_opening[character]:
-                return index
-            stack.pop()
-    return None
-
-
-def _is_complete_doi(candidate: str) -> bool:
-    if _DOI_PREFIX_PATTERN.match(candidate) is None:
-        return False
-    prefix_end = candidate.find("/") + 1
-    suffix = candidate[prefix_end:]
-    if not suffix or any(
-        character.isspace() or not character.isprintable() for character in suffix
-    ):
-        return False
-
-    stack: list[str] = []
-    closing_to_opening = {closing: opening for opening, closing in _DOI_DELIMITERS.items()}
-    for character in suffix:
-        if character in _DOI_DELIMITERS:
-            stack.append(character)
-        elif character in closing_to_opening:
-            if not stack or stack.pop() != closing_to_opening[character]:
-                return False
-    return not stack
+    return normalize_doi(link, source="url_path", lowercase=False)

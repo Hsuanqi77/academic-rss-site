@@ -6,26 +6,30 @@ from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
+from unicodedata import normalize as normalize_unicode
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from paper_radar.config import FeedConfig
+from paper_radar.identifiers import normalize_doi
 from paper_radar.models import ArticleRecord, RawFeedItem
 
 
 _WHITESPACE_PATTERN = re.compile(r"\s+")
-_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
-_DOI_LABEL_PATTERN = re.compile(r"^doi\s*:\s*", re.IGNORECASE)
-_DOI_RESOLVER_HOSTS = {"doi.org", "dx.doi.org"}
-_DOI_DELIMITERS = {"(": ")", "[": "]", "{": "}", "<": ">"}
-_DOI_PROSE_PUNCTUATION = ".,!?\"'"
 _TRACKING_PARAMETERS = {"fbclid", "gclid", "spm"}
 _HOST_LABEL_PATTERN = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$", re.IGNORECASE)
+_PERCENT_ESCAPE_PATTERN = re.compile(r"%([0-9a-f]{2})", re.IGNORECASE)
+_URL_UNRESERVED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+_MIN_PUBLICATION_YEAR = 1900
+_MAX_PUBLICATION_YEAR = 2100
 _ARTICLE_TYPE_PATTERNS = (
-    ("review", re.compile(r"\breview(?:\s+article)?\b", re.IGNORECASE)),
     ("correction", re.compile(r"\b(?:correction|erratum|corrigendum)\b", re.IGNORECASE)),
+    ("review", re.compile(r"\breview(?:\s+article)?\b", re.IGNORECASE)),
     (
         "editorial",
-        re.compile(r"\b(?:editorial|comment(?:ary)?|perspective)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:editorial|comment(?:ary)?|perspective|letter\s+to\s+the\s+editor)\b",
+            re.IGNORECASE,
+        ),
     ),
     ("research", re.compile(r"\b(?:research|article|letter)\b", re.IGNORECASE)),
 )
@@ -55,100 +59,45 @@ class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self.hidden_depth = 0
+        self.hidden_tags: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         if tag in _HIDDEN_TAGS:
-            self.hidden_depth += 1
-        elif self.hidden_depth == 0 and tag in _SEPARATOR_TAGS:
+            self.hidden_tags.append(tag)
+        elif not self.hidden_tags and tag in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
-        if self.hidden_depth == 0 and tag in _SEPARATOR_TAGS:
+        if not self.hidden_tags and tag in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _HIDDEN_TAGS and self.hidden_depth:
-            self.hidden_depth -= 1
-        elif self.hidden_depth == 0 and tag in _SEPARATOR_TAGS:
+        if tag in _HIDDEN_TAGS:
+            for index in range(len(self.hidden_tags) - 1, -1, -1):
+                if self.hidden_tags[index] == tag:
+                    del self.hidden_tags[index]
+                    break
+        elif not self.hidden_tags and tag in _SEPARATOR_TAGS:
             self.parts.append(" ")
 
     def handle_data(self, data: str) -> None:
-        if self.hidden_depth == 0:
+        if not self.hidden_tags:
             self.parts.append(data)
 
 
 def clean_text(value: Any) -> str | None:
     if value is None:
         return None
+    source = str(value)
+    for _ in range(2):
+        source = unescape(source)
     parser = _TextExtractor()
-    parser.feed(unescape(str(value)))
+    parser.feed(source)
     parser.close()
     cleaned = _WHITESPACE_PATTERN.sub(" ", "".join(parser.parts)).strip()
-    return cleaned or None
-
-
-def normalize_doi(value: Any) -> str | None:
-    if value is None:
-        return None
-    candidate = unescape(str(value)).strip()
-    if not candidate:
-        return None
-
-    try:
-        parsed = urlsplit(candidate)
-        hostname = parsed.hostname
-        _ = parsed.port
-    except ValueError:
-        return None
-    is_resolver = (
-        parsed.scheme.lower() in {"http", "https"}
-        and hostname is not None
-        and hostname.lower() in _DOI_RESOLVER_HOSTS
-    )
-    if is_resolver:
-        candidate = unquote(parsed.path.lstrip("/"))
-    else:
-        candidate = _DOI_LABEL_PATTERN.sub("", candidate, count=1)
-
-    candidate = _strip_doi_prose_suffix(candidate.strip())
-    if not _is_complete_doi(candidate):
-        return None
-    return candidate.lower()
-
-
-def _strip_doi_prose_suffix(candidate: str) -> str:
-    closing_to_opening = {closing: opening for opening, closing in _DOI_DELIMITERS.items()}
-    while candidate:
-        if candidate[-1] in _DOI_PROSE_PUNCTUATION:
-            candidate = candidate[:-1]
-            continue
-        opening = closing_to_opening.get(candidate[-1])
-        if opening is not None and candidate.count(candidate[-1]) > candidate.count(opening):
-            candidate = candidate[:-1]
-            continue
-        break
-    return candidate
-
-
-def _is_complete_doi(candidate: str) -> bool:
-    if _DOI_PATTERN.fullmatch(candidate) is None:
-        return False
-    suffix = candidate[candidate.find("/") + 1 :]
-    if any(not character.isprintable() or character.isspace() for character in suffix):
-        return False
-
-    stack: list[str] = []
-    closing_to_opening = {closing: opening for opening, closing in _DOI_DELIMITERS.items()}
-    for character in suffix:
-        if character in _DOI_DELIMITERS:
-            stack.append(character)
-        elif character in closing_to_opening:
-            if not stack or stack.pop() != closing_to_opening[character]:
-                return False
-    return not stack
+    return normalize_unicode("NFC", cleaned) or None
 
 
 def normalize_url(value: Any) -> str | None:
@@ -166,9 +115,16 @@ def normalize_url(value: Any) -> str | None:
         scheme = parsed.scheme.lower()
         hostname = parsed.hostname
         port = parsed.port
+        username = parsed.username
+        password = parsed.password
     except (UnicodeError, ValueError):
         return None
-    if scheme not in {"http", "https"} or hostname is None:
+    if (
+        scheme not in {"http", "https"}
+        or hostname is None
+        or username is not None
+        or password is not None
+    ):
         return None
 
     canonical_host = _canonicalize_host(hostname)
@@ -181,10 +137,10 @@ def normalize_url(value: Any) -> str | None:
     ):
         canonical_host = f"{canonical_host}:{port}"
 
-    path = parsed.path or "/"
+    path = _normalize_percent_escapes(parsed.path or "/")
     if len(path) > 1:
         path = path.rstrip("/") or "/"
-    query = _remove_tracking_parameters(parsed.query)
+    query = _remove_tracking_parameters(_normalize_percent_escapes(parsed.query))
     return urlunsplit((scheme, canonical_host, path, query, ""))
 
 
@@ -205,7 +161,17 @@ def _canonicalize_host(hostname: str) -> str | None:
         return None
     if all(character.isdigit() or character == "." for character in ascii_host):
         return None
-    return ascii_host
+    return ascii_host.rstrip(".")
+
+
+def _normalize_percent_escapes(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        character = chr(int(match.group(1), 16))
+        if character in _URL_UNRESERVED:
+            return character
+        return f"%{match.group(1).upper()}"
+
+    return _PERCENT_ESCAPE_PATTERN.sub(replace, value)
 
 
 def _remove_tracking_parameters(query: str) -> str:
@@ -243,17 +209,25 @@ def normalize_date(value: Any) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     try:
-        return parsed.astimezone(timezone.utc).isoformat()
+        normalized = parsed.astimezone(timezone.utc)
     except (OverflowError, ValueError):
         return None
+    # RSS dates outside this deliberately broad publication window are almost
+    # certainly parser errors and would destabilize fallback identities.
+    if not _MIN_PUBLICATION_YEAR <= normalized.year <= _MAX_PUBLICATION_YEAR:
+        return None
+    return normalized.isoformat()
 
 
 def normalize_article_type(value: Any) -> str:
     candidate = clean_text(value)
     if candidate is None:
         return "other"
+    is_news_article = re.search(r"\bnews\s+article\b", candidate, re.IGNORECASE) is not None
     for article_type, pattern in _ARTICLE_TYPE_PATTERNS:
         if pattern.search(candidate):
+            if article_type == "research" and is_news_article:
+                return "other"
             return article_type
     return "other"
 
@@ -265,6 +239,12 @@ def make_uid(
     title: Any,
     published: Any,
 ) -> str:
+    """Return an import-candidate UID, not an unconditional persistence key.
+
+    Persistence must reconcile incoming records by DOI and then normalized URL
+    before insert. When enrichment changes a URL UID to a DOI UID, repositories
+    must retain the existing UID or migrate it and dependent tags transactionally.
+    """
     canonical_doi = normalize_doi(doi)
     if canonical_doi is not None:
         return f"doi:{canonical_doi}"
