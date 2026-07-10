@@ -52,6 +52,9 @@ def test_schema_path_targets_packaged_sql_file() -> None:
     assert SCHEMA_PATH.name == "schema.sql"
     assert SCHEMA_PATH.parent.name == "paper_radar"
     assert SCHEMA_PATH.is_file()
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS article_url_aliases" in schema
+    assert "PRAGMA user_version = 2" in schema
 
 
 def test_connect_database_creates_parent_and_applies_connection_settings(tmp_path: Path) -> None:
@@ -72,7 +75,7 @@ def test_connect_database_creates_parent_and_applies_connection_settings(tmp_pat
         connection.close()
 
 
-def test_initialize_database_creates_version_one_schema(tmp_path: Path) -> None:
+def test_initialize_database_creates_version_two_schema(tmp_path: Path) -> None:
     connection = sqlite3.connect(tmp_path / "paper-radar.sqlite3")
     connection.row_factory = sqlite3.Row
     try:
@@ -86,8 +89,15 @@ def test_initialize_database_creates_version_one_schema(tmp_path: Path) -> None:
         }
         version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-        assert tables == {"journals", "articles", "tags", "article_tags", "runs_log"}
-        assert version == 1
+        assert tables == {
+            "journals",
+            "articles",
+            "article_url_aliases",
+            "tags",
+            "article_tags",
+            "runs_log",
+        }
+        assert version == 2
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         connection.close()
@@ -110,7 +120,7 @@ def test_initialize_database_is_idempotent_and_preserves_data(tmp_path: Path) ->
             "publisher": "nature",
             "feed_url": "https://example.com/feed.xml",
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -173,10 +183,10 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
     try:
         connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
         connection.execute("INSERT INTO sentinel VALUES ('preserve me')")
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
         connection.commit()
 
-        with pytest.raises(RuntimeError, match="unsupported database schema version: 2"):
+        with pytest.raises(RuntimeError, match="unsupported database schema version: 3"):
             initialize_database(connection)
 
         tables = {
@@ -187,7 +197,7 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
         }
         assert tables == {"sentinel"}
         assert connection.execute("SELECT value FROM sentinel").fetchone()[0] == "preserve me"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -253,6 +263,19 @@ def test_schema_defaults_and_indexes(tmp_path: Path) -> None:
         ]
         assert published_columns == [("published_at", 1)]
         assert tag_columns == ["tag_id", "article_uid"]
+
+        alias_indexes = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA index_list('article_url_aliases')")
+        }
+        assert "idx_article_url_aliases_article_uid" in alias_indexes
+        alias_columns = [
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA index_info('idx_article_url_aliases_article_uid')"
+            )
+        ]
+        assert alias_columns == ["article_uid"]
     finally:
         connection.close()
 
@@ -442,5 +465,56 @@ def test_article_tag_foreign_keys_and_cascades(tmp_path: Path) -> None:
         connection.execute("DELETE FROM articles WHERE uid = 'article-1'")
         assert connection.execute("SELECT COUNT(*) FROM article_tags").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM tags").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_initialize_database_migrates_v1_and_backfills_url_aliases(tmp_path: Path) -> None:
+    connection = connect_database(tmp_path / "v1.sqlite3")
+    try:
+        initialize_database(connection)
+        insert_journal(connection)
+        insert_article(
+            connection,
+            uid="with-url",
+            normalized_url="https://example.com/articles/canonical",
+        )
+        insert_article(connection, uid="without-url")
+        connection.execute("DROP TABLE article_url_aliases")
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+
+        initialize_database(connection)
+
+        aliases = connection.execute(
+            "SELECT normalized_url, article_uid FROM article_url_aliases"
+        ).fetchall()
+        assert [tuple(row) for row in aliases] == [
+            ("https://example.com/articles/canonical", "with-url")
+        ]
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.in_transaction is False
+    finally:
+        connection.close()
+
+
+def test_url_aliases_cascade_when_article_is_deleted(tmp_path: Path) -> None:
+    connection = connect_database(tmp_path / "aliases.sqlite3")
+    try:
+        initialize_database(connection)
+        insert_journal(connection)
+        insert_article(
+            connection,
+            uid="article-1",
+            normalized_url="https://example.com/articles/canonical",
+        )
+        connection.execute(
+            "INSERT INTO article_url_aliases (normalized_url, article_uid) VALUES (?, ?)",
+            ("https://example.com/articles/old", "article-1"),
+        )
+
+        connection.execute("DELETE FROM articles WHERE uid = ?", ("article-1",))
+
+        assert connection.execute("SELECT COUNT(*) FROM article_url_aliases").fetchone()[0] == 0
     finally:
         connection.close()

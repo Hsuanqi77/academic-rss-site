@@ -366,6 +366,58 @@ def test_url_only_article_is_enriched_without_uid_churn_or_tag_loss(
     assert resolve_article_uid(connection, enriched) == "url:stable"
 
 
+def test_historical_url_alias_replay_resolves_survivor_without_duplicate(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    old_url = "https://example.com/articles/old"
+    new_url = "https://example.com/articles/new"
+    url_only = article(uid="url:stable", doi=None, normalized_url=old_url)
+    assert upsert_article(connection, url_only) == "inserted"
+    enriched = article(
+        uid="doi:10.1234/alias",
+        doi="10.1234/alias",
+        normalized_url=old_url,
+    )
+    assert upsert_article(connection, enriched) == "updated"
+    moved = replace(enriched, normalized_url=new_url, article_url=new_url)
+    assert upsert_article(connection, moved) == "updated"
+
+    replay = article(
+        uid="url:replay-candidate",
+        doi=None,
+        normalized_url=old_url,
+        article_url=old_url,
+        metadata_status="rss_only",
+    )
+    assert resolve_article_uid(connection, replay) == url_only.uid
+    assert upsert_article(connection, replay) == "updated"
+
+    assert connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    assert {
+        tuple(row)
+        for row in connection.execute("SELECT normalized_url, article_uid FROM article_url_aliases")
+    } == {(old_url, url_only.uid), (new_url, url_only.uid)}
+
+
+def test_direct_normalized_url_fallback_repairs_missing_alias(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    record = article(uid="url:stable")
+    assert upsert_article(connection, record) == "inserted"
+    connection.execute("DELETE FROM article_url_aliases")
+    connection.commit()
+    replay = replace(record, uid="url:defensive-replay")
+
+    assert upsert_article(connection, replay) == "skipped"
+
+    alias = connection.execute(
+        "SELECT normalized_url, article_uid FROM article_url_aliases"
+    ).fetchone()
+    assert tuple(alias) == (record.normalized_url, record.uid)
+
+
 def test_lower_quality_url_record_does_not_erase_enriched_metadata(
     connection: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -543,6 +595,97 @@ def test_split_identity_rows_merge_tags_and_preserve_earliest_first_seen(
         "url-tag",
     }
     assert resolve_article_uid(connection, combined) == doi_row.uid
+
+
+def test_split_identity_merge_repoints_all_historical_aliases(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    doi_row = article(
+        uid="doi:alias-survivor",
+        doi="10.1234/split-alias",
+        normalized_url="https://example.com/doi-current",
+    )
+    url_row = article(
+        uid="url:alias-loser",
+        doi=None,
+        normalized_url="https://example.com/url-current",
+    )
+    assert upsert_article(connection, doi_row) == "inserted"
+    assert upsert_article(connection, url_row) == "inserted"
+    connection.executemany(
+        "INSERT OR IGNORE INTO article_url_aliases (normalized_url, article_uid) VALUES (?, ?)",
+        (
+            (doi_row.normalized_url, doi_row.uid),
+            ("https://example.com/doi-historical", doi_row.uid),
+            (url_row.normalized_url, url_row.uid),
+            ("https://example.com/url-historical", url_row.uid),
+        ),
+    )
+    connection.commit()
+    combined = article(
+        uid="doi:new-alias-candidate",
+        doi=doi_row.doi,
+        normalized_url=url_row.normalized_url,
+    )
+
+    assert upsert_article(connection, combined) == "updated"
+
+    assert connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    aliases = connection.execute(
+        "SELECT normalized_url, article_uid FROM article_url_aliases"
+    ).fetchall()
+    assert {row["normalized_url"] for row in aliases} == {
+        doi_row.normalized_url,
+        "https://example.com/doi-historical",
+        url_row.normalized_url,
+        "https://example.com/url-historical",
+    }
+    assert {row["article_uid"] for row in aliases} == {doi_row.uid}
+
+
+def test_conflicting_historical_alias_and_doi_roll_back(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    doi_row = article(
+        uid="doi:first",
+        doi="10.1234/first",
+        normalized_url="https://example.com/first",
+    )
+    alias_owner = article(
+        uid="doi:second",
+        doi="10.1234/second",
+        normalized_url="https://example.com/second-current",
+    )
+    assert upsert_article(connection, doi_row) == "inserted"
+    assert upsert_article(connection, alias_owner) == "inserted"
+    historical_url = "https://example.com/second-historical"
+    connection.execute(
+        "INSERT INTO article_url_aliases (normalized_url, article_uid) VALUES (?, ?)",
+        (historical_url, alias_owner.uid),
+    )
+    connection.commit()
+    incoming = replace(doi_row, normalized_url=historical_url, title="Must roll back")
+
+    with pytest.raises(RepositoryConflictError, match="normalized URL|contradictory DOI"):
+        upsert_article(connection, incoming)
+
+    assert {
+        tuple(row)
+        for row in connection.execute("SELECT uid, doi, title FROM articles ORDER BY uid")
+    } == {
+        (doi_row.uid, doi_row.doi, doi_row.title),
+        (alias_owner.uid, alias_owner.doi, alias_owner.title),
+    }
+    assert (
+        connection.execute(
+            "SELECT article_uid FROM article_url_aliases WHERE normalized_url = ?",
+            (historical_url,),
+        ).fetchone()[0]
+        == alias_owner.uid
+    )
+    assert connection.in_transaction is False
 
 
 def test_split_identity_merge_keeps_metadata_from_higher_quality_row(

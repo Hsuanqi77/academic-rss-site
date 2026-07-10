@@ -134,9 +134,24 @@ def upsert_article(connection: sqlite3.Connection, article: ArticleRecord) -> st
                 """,
                 values,
             )
+            _record_article_alias(connection, article.normalized_url, article.uid)
             return "inserted"
 
         survivor = ordered_rows[0]
+        survivor_uid = survivor["uid"]
+        for loser in ordered_rows[1:]:
+            connection.execute(
+                "UPDATE article_url_aliases SET article_uid = ? WHERE article_uid = ?",
+                (survivor_uid, loser["uid"]),
+            )
+        for existing_row in ordered_rows:
+            _record_article_alias(
+                connection,
+                existing_row["normalized_url"],
+                survivor_uid,
+            )
+        _record_article_alias(connection, article.normalized_url, survivor_uid)
+
         desired = _merged_article_values(survivor, ordered_rows[1:], article)
         has_losers = len(ordered_rows) > 1
         changed = has_losers or any(
@@ -146,7 +161,6 @@ def upsert_article(connection: sqlite3.Connection, article: ArticleRecord) -> st
             return "skipped"
 
         timestamp = utc_now()
-        survivor_uid = survivor["uid"]
         for loser in ordered_rows[1:]:
             connection.execute(
                 """
@@ -300,27 +314,46 @@ def _row_exists(connection: sqlite3.Connection, table: str, row_id: str) -> bool
 
 def _article_identity_rows(
     connection: sqlite3.Connection, article: ArticleRecord
-) -> tuple[sqlite3.Row | None, sqlite3.Row | None, sqlite3.Row | None]:
+) -> tuple[
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+]:
     doi_row = (
         connection.execute("SELECT * FROM articles WHERE doi = ?", (article.doi,)).fetchone()
         if article.doi is not None
         else None
     )
-    url_row = (
+    alias_row = (
         connection.execute(
-            "SELECT * FROM articles WHERE normalized_url = ?", (article.normalized_url,)
+            """
+            SELECT articles.*
+            FROM article_url_aliases
+            JOIN articles ON articles.uid = article_url_aliases.article_uid
+            WHERE article_url_aliases.normalized_url = ?
+            """,
+            (article.normalized_url,),
         ).fetchone()
         if article.normalized_url is not None
         else None
     )
     uid_row = connection.execute("SELECT * FROM articles WHERE uid = ?", (article.uid,)).fetchone()
-    rows = (doi_row, url_row, uid_row)
+    direct_url_row = (
+        connection.execute(
+            "SELECT * FROM articles WHERE normalized_url = ?", (article.normalized_url,)
+        ).fetchone()
+        if article.normalized_url is not None and alias_row is None
+        else None
+    )
+    rows = (doi_row, alias_row, uid_row, direct_url_row)
     _validate_identity_rows(article, rows)
     return rows
 
 
 def _validate_identity_rows(article: ArticleRecord, rows: tuple[sqlite3.Row | None, ...]) -> None:
-    doi_row, url_row, _ = rows
+    doi_row, alias_row, _, direct_url_row = rows
+    url_row = alias_row if alias_row is not None else direct_url_row
     if doi_row is not None and doi_row["journal_id"] != article.journal_id:
         raise RepositoryConflictError(
             f"DOI {article.doi} already belongs to conflicting journal {doi_row['journal_id']}"
@@ -344,6 +377,21 @@ def _validate_identity_rows(article: ArticleRecord, rows: tuple[sqlite3.Row | No
         dois.add(article.doi)
     if len(dois) > 1:
         raise RepositoryConflictError("article identity has contradictory DOI values")
+
+
+def _record_article_alias(
+    connection: sqlite3.Connection, normalized_url: object, article_uid: str
+) -> None:
+    if normalized_url is None:
+        return
+    connection.execute(
+        """
+        INSERT INTO article_url_aliases (normalized_url, article_uid)
+        VALUES (?, ?)
+        ON CONFLICT(normalized_url) DO UPDATE SET article_uid = excluded.article_uid
+        """,
+        (normalized_url, article_uid),
+    )
 
 
 def _ordered_unique_rows(
@@ -541,7 +589,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     try:
         connection.execute("BEGIN IMMEDIATE")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise RuntimeError(f"unsupported database schema version: {version}")
 
         script = SCHEMA_PATH.read_text(encoding="utf-8")

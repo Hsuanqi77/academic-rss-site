@@ -55,6 +55,19 @@ CREATE INDEX IF NOT EXISTS idx_articles_article_type
 CREATE INDEX IF NOT EXISTS idx_articles_oa_status
     ON articles(oa_status);
 
+CREATE TABLE IF NOT EXISTS article_url_aliases (
+    normalized_url TEXT NOT NULL PRIMARY KEY,
+    article_uid TEXT NOT NULL REFERENCES articles(uid) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_url_aliases_article_uid
+    ON article_url_aliases(article_uid);
+
+INSERT OR IGNORE INTO article_url_aliases (normalized_url, article_uid)
+    SELECT normalized_url, uid
+    FROM articles
+    WHERE normalized_url IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS tags (
     id TEXT NOT NULL PRIMARY KEY,
     label TEXT NOT NULL UNIQUE
@@ -81,4 +94,4 @@ CREATE TABLE IF NOT EXISTS runs_log (
     notes TEXT NOT NULL DEFAULT ''
 );
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
