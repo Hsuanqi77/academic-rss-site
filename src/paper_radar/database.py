@@ -407,8 +407,11 @@ def _merged_article_values(
             loser_is_higher_quality or merged["article_type"] == "other"
         ):
             merged["article_type"] = loser["article_type"]
-        if merged["oa_status"] == "unknown" and loser["oa_status"] != "unknown":
-            merged["oa_status"] = loser["oa_status"]
+        merged["oa_status"] = _prefer_known_oa_status(
+            str(merged["oa_status"]),
+            str(loser["oa_status"]),
+            prefer_candidate=loser_is_higher_quality,
+        )
         merged["metadata_status"] = _higher_metadata_status(
             str(merged["metadata_status"]), str(loser["metadata_status"])
         )
@@ -451,10 +454,10 @@ def _merged_article_values(
                 if article.normalized_url is not None
                 else merged["normalized_url"]
             ),
-            "oa_status": (
-                article.oa_status
-                if article.oa_status != "unknown" or merged["oa_status"] == "unknown"
-                else merged["oa_status"]
+            "oa_status": _prefer_known_oa_status(
+                str(merged["oa_status"]),
+                article.oa_status,
+                prefer_candidate=incoming_is_not_lower_quality,
             ),
             "source_feed_url": article.source_feed_url,
             "metadata_status": _higher_metadata_status(
@@ -467,6 +470,15 @@ def _merged_article_values(
 
 def _prefer_protected_text(current: object, candidate: object, *, prefer_candidate: bool) -> object:
     if _has_text(candidate) and (prefer_candidate or not _has_text(current)):
+        return candidate
+    return current
+
+
+def _prefer_known_oa_status(current: str, candidate: str, *, prefer_candidate: bool) -> str:
+    """Prefer stronger OA evidence; keep the stable survivor when split rows tie."""
+    if candidate == "unknown":
+        return current
+    if current == "unknown" or prefer_candidate:
         return candidate
     return current
 

@@ -407,6 +407,52 @@ def test_lower_quality_url_record_does_not_erase_enriched_metadata(
     assert resolve_article_uid(connection, low_quality) == enriched.uid
 
 
+@pytest.mark.parametrize(
+    ("enriched_oa", "rss_oa"),
+    (("open", "closed"), ("closed", "open")),
+)
+def test_lower_rank_record_cannot_change_known_enriched_oa_status(
+    connection: sqlite3.Connection,
+    enriched_oa: str,
+    rss_oa: str,
+) -> None:
+    register_default_journal(connection)
+    enriched = article(
+        uid="doi:10.1234/oa-rank",
+        doi="10.1234/oa-rank",
+        oa_status=enriched_oa,
+        metadata_status="enriched",
+    )
+    assert upsert_article(connection, enriched) == "inserted"
+    rss_update = article(
+        uid="url:oa-rank",
+        doi=None,
+        title="Updated RSS title",
+        oa_status=rss_oa,
+        metadata_status="rss_only",
+    )
+
+    assert upsert_article(connection, rss_update) == "updated"
+
+    row = connection.execute("SELECT title, oa_status, metadata_status FROM articles").fetchone()
+    assert tuple(row) == ("Updated RSS title", enriched_oa, "enriched")
+
+
+def test_same_rank_meaningful_oa_status_may_update_but_unknown_cannot_erase_it(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    original = article(oa_status="open", metadata_status="enriched")
+    assert upsert_article(connection, original) == "inserted"
+    changed = replace(original, oa_status="closed")
+
+    assert upsert_article(connection, changed) == "updated"
+    assert connection.execute("SELECT oa_status FROM articles").fetchone()[0] == "closed"
+
+    assert upsert_article(connection, replace(changed, oa_status="unknown")) == "skipped"
+    assert connection.execute("SELECT oa_status FROM articles").fetchone()[0] == "closed"
+
+
 def test_conflicting_doi_for_same_url_rolls_back_without_partial_changes(
     connection: sqlite3.Connection,
 ) -> None:
@@ -546,6 +592,40 @@ def test_split_identity_merge_keeps_metadata_from_higher_quality_row(
     assert row["published_at"] == url_row.published_at
     assert row["article_type"] == url_row.article_type
     assert row["metadata_status"] == "enriched"
+
+
+def test_split_identity_merge_keeps_oa_from_higher_quality_row(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    doi_row = article(
+        uid="doi:oa-survivor",
+        doi="10.1234/split-oa",
+        normalized_url="https://example.com/old-url",
+        oa_status="closed",
+        metadata_status="rss_only",
+    )
+    url_row = article(
+        uid="url:oa-loser",
+        doi=None,
+        normalized_url="https://example.com/canonical",
+        oa_status="open",
+        metadata_status="enriched",
+    )
+    assert upsert_article(connection, doi_row) == "inserted"
+    assert upsert_article(connection, url_row) == "inserted"
+    combined = article(
+        uid="doi:new-oa-candidate",
+        doi="10.1234/split-oa",
+        normalized_url="https://example.com/canonical",
+        oa_status="closed",
+        metadata_status="rss_only",
+    )
+
+    assert upsert_article(connection, combined) == "updated"
+
+    row = connection.execute("SELECT uid, oa_status, metadata_status FROM articles").fetchone()
+    assert tuple(row) == (doi_row.uid, "open", "enriched")
 
 
 def test_identity_merge_failure_restores_both_rows_and_tag_links(
