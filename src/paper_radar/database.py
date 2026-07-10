@@ -230,16 +230,18 @@ def replace_article_tags(
 
         connection.execute("DELETE FROM article_tags WHERE article_uid = ?", (article_uid,))
         for current_topic in topics_by_id.values():
-            connection.execute(
-                """
-                INSERT INTO tags (id, label) VALUES (?, ?)
-                ON CONFLICT(id) DO UPDATE SET label = excluded.label
-                """,
-                (current_topic.id, current_topic.label),
-            )
+            _upsert_or_migrate_tag(connection, current_topic)
         connection.executemany(
             "INSERT INTO article_tags (article_uid, tag_id) VALUES (?, ?)",
             ((article_uid, topic_id) for topic_id in topics_by_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM tags
+            WHERE NOT EXISTS (
+                SELECT 1 FROM article_tags WHERE article_tags.tag_id = tags.id
+            )
+            """
         )
 
 
@@ -443,6 +445,34 @@ def _record_article_alias(
         ON CONFLICT(normalized_url) DO UPDATE SET article_uid = excluded.article_uid
         """,
         (normalized_url, article_uid),
+    )
+
+
+def _upsert_or_migrate_tag(connection: sqlite3.Connection, current_topic: TopicConfig) -> None:
+    label_owner = connection.execute(
+        "SELECT id FROM tags WHERE label = ?", (current_topic.label,)
+    ).fetchone()
+    migrated_article_uids: list[str] = []
+    if label_owner is not None and label_owner["id"] != current_topic.id:
+        migrated_article_uids = [
+            row["article_uid"]
+            for row in connection.execute(
+                "SELECT article_uid FROM article_tags WHERE tag_id = ?",
+                (label_owner["id"],),
+            )
+        ]
+        connection.execute("DELETE FROM tags WHERE id = ?", (label_owner["id"],))
+
+    connection.execute(
+        """
+        INSERT INTO tags (id, label) VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET label = excluded.label
+        """,
+        (current_topic.id, current_topic.label),
+    )
+    connection.executemany(
+        "INSERT OR IGNORE INTO article_tags (article_uid, tag_id) VALUES (?, ?)",
+        ((article_uid, current_topic.id) for article_uid in migrated_article_uids),
     )
 
 

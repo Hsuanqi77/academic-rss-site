@@ -961,11 +961,35 @@ def test_replace_article_tags_is_idempotent_updates_labels_and_removes_stale_lin
     ).fetchall()
     assert [tuple(row) for row in links] == [(record.uid, "acoustics", "Wave acoustics")]
     stale_tag = connection.execute("SELECT label FROM tags WHERE id = ?", ("materials",)).fetchone()
-    assert stale_tag["label"] == "Materials"
+    assert stale_tag is None
     assert connection.in_transaction is False
 
 
-def test_replace_article_tags_rolls_back_all_changes_on_label_conflict(
+def test_replace_article_tags_migrates_label_to_new_id_for_all_articles(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    first = article(uid="url:first", normalized_url="https://example.com/first")
+    second = article(uid="url:second", normalized_url="https://example.com/second")
+    assert upsert_article(connection, first) == "inserted"
+    assert upsert_article(connection, second) == "inserted"
+    replace_article_tags(connection, first.uid, [topic("old-acoustics", "Acoustics")])
+    replace_article_tags(connection, second.uid, [topic("old-acoustics", "Acoustics")])
+
+    replace_article_tags(connection, first.uid, [topic("new-acoustics", "Acoustics")])
+
+    assert [tuple(row) for row in connection.execute("SELECT id, label FROM tags ORDER BY id")] == [
+        ("new-acoustics", "Acoustics")
+    ]
+    assert {
+        tuple(row)
+        for row in connection.execute(
+            "SELECT article_uid, tag_id FROM article_tags ORDER BY article_uid"
+        )
+    } == {(first.uid, "new-acoustics"), (second.uid, "new-acoustics")}
+
+
+def test_replace_article_tags_rolls_back_all_changes_on_label_update_failure(
     connection: sqlite3.Connection,
 ) -> None:
     register_default_journal(connection)
@@ -976,9 +1000,20 @@ def test_replace_article_tags_rolls_back_all_changes_on_label_conflict(
         record.uid,
         [topic("acoustics", "Acoustics"), topic("materials", "Materials")],
     )
+    connection.execute(
+        """
+        CREATE TRIGGER reject_tag_label_update
+        BEFORE UPDATE OF label ON tags
+        WHEN OLD.id = 'acoustics'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected tag update failure');
+        END
+        """
+    )
+    connection.commit()
 
-    with pytest.raises(sqlite3.IntegrityError):
-        replace_article_tags(connection, record.uid, [topic("acoustics", "Materials")])
+    with pytest.raises(sqlite3.IntegrityError, match="injected tag update failure"):
+        replace_article_tags(connection, record.uid, [topic("acoustics", "Wave acoustics")])
 
     assert {
         row["tag_id"]
