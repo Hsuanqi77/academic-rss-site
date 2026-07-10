@@ -48,7 +48,7 @@ feeds:
     publisher: aip
     feed_url: https://pubs.aip.org/rss/site_1000017/1000011.xml
   - id: ieee-transactions-ultrasonics
-    name: IEEE Transactions on Ultrasonics
+    name: IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control
     publisher: ieee
     feed_url: https://ieeexplore.ieee.org/rss/TOC11073821.XML
   - id: ieee-transactions-mtt

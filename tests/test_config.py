@@ -220,6 +220,11 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
     feeds = load_feeds(Path("feeds.yml"))
 
     assert [feed.id for feed in feeds] == expected_ids
+    ultrasonics_feed = next(feed for feed in feeds if feed.id == "ieee-transactions-ultrasonics")
+    assert (
+        ultrasonics_feed.name
+        == "IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control"
+    )
 
 
 def test_seed_configuration_contains_only_approved_topics() -> None:
