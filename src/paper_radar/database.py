@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 
 from paper_radar.config import FeedConfig, TopicConfig
 from paper_radar.models import ArticleRecord
@@ -28,7 +28,8 @@ _ARTICLE_COLUMNS = (
     "metadata_status",
 )
 _METADATA_STATUS_RANK = {"rss_only": 0, "partial": 1, "enriched": 2}
-_WRITE_TRANSACTION_ATTEMPTS = 4
+_WRITE_TRANSACTION_BUDGET_SECONDS = 5.0
+_WRITE_TRANSACTION_ATTEMPT_TIMEOUT_MS = 100
 _WRITE_TRANSACTION_RETRY_DELAY_SECONDS = 0.02
 _JOURNAL_STATUSES = frozenset({"ok", "not_modified", "partial", "error"})
 _SUCCESSFUL_JOURNAL_STATUSES = frozenset({"ok", "not_modified"})
@@ -218,11 +219,19 @@ def replace_article_tags(
     connection: sqlite3.Connection, article_uid: str, topics: Iterable[TopicConfig]
 ) -> None:
     topics_by_id: dict[str, TopicConfig] = {}
+    topic_id_by_label: dict[str, str] = {}
     for current_topic in topics:
         previous = topics_by_id.get(current_topic.id)
         if previous is not None and previous.label != current_topic.label:
             raise RepositoryConflictError(f"conflicting labels supplied for tag {current_topic.id}")
+        previous_id = topic_id_by_label.get(current_topic.label)
+        if previous_id is not None and previous_id != current_topic.id:
+            raise RepositoryConflictError(
+                f"duplicate tag label {current_topic.label!r} supplied for "
+                f"{previous_id} and {current_topic.id}"
+            )
         topics_by_id[current_topic.id] = current_topic
+        topic_id_by_label[current_topic.label] = current_topic.id
 
     with _atomic(connection):
         if not _row_exists(connection, "articles", article_uid):
@@ -335,21 +344,40 @@ def _atomic(connection: sqlite3.Connection) -> Iterator[None]:
 
 
 def _begin_immediate(connection: sqlite3.Connection) -> None:
+    """Acquire a write transaction within one monotonic total time budget."""
+    configured_timeout_ms = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+    total_budget_seconds = min(
+        _WRITE_TRANSACTION_BUDGET_SECONDS,
+        configured_timeout_ms / 1000,
+    )
+    deadline = monotonic() + total_budget_seconds
     last_error: sqlite3.OperationalError | None = None
-    for attempt in range(1, _WRITE_TRANSACTION_ATTEMPTS + 1):
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            return
-        except sqlite3.OperationalError as error:
-            if not _is_sqlite_busy(error):
-                raise
-            last_error = error
-            if attempt < _WRITE_TRANSACTION_ATTEMPTS:
-                sleep(_WRITE_TRANSACTION_RETRY_DELAY_SECONDS * attempt)
+    try:
+        while True:
+            remaining_seconds = max(0.0, deadline - monotonic())
+            remaining_ms = max(0, int(remaining_seconds * 1000))
+            attempt_timeout_ms = min(
+                _WRITE_TRANSACTION_ATTEMPT_TIMEOUT_MS,
+                configured_timeout_ms,
+                remaining_ms,
+            )
+            connection.execute(f"PRAGMA busy_timeout = {attempt_timeout_ms}")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as error:
+                if not _is_sqlite_busy(error):
+                    raise
+                last_error = error
+                remaining_seconds = deadline - monotonic()
+                if remaining_seconds <= 0:
+                    break
+                sleep(min(_WRITE_TRANSACTION_RETRY_DELAY_SECONDS, remaining_seconds))
+    finally:
+        connection.execute(f"PRAGMA busy_timeout = {configured_timeout_ms}")
 
     raise RepositoryBusyError(
-        "could not acquire immediate write transaction "
-        f"after {_WRITE_TRANSACTION_ATTEMPTS} attempts"
+        f"could not acquire immediate write transaction within {total_budget_seconds:.3f} seconds"
     ) from last_error
 
 
@@ -378,7 +406,6 @@ def _article_identity_rows(
     sqlite3.Row | None,
     sqlite3.Row | None,
     sqlite3.Row | None,
-    sqlite3.Row | None,
 ]:
     doi_row = (
         connection.execute("SELECT * FROM articles WHERE doi = ?", (article.doi,)).fetchone()
@@ -398,7 +425,6 @@ def _article_identity_rows(
         if article.normalized_url is not None
         else None
     )
-    uid_row = connection.execute("SELECT * FROM articles WHERE uid = ?", (article.uid,)).fetchone()
     direct_url_row = (
         connection.execute(
             "SELECT * FROM articles WHERE normalized_url = ?", (article.normalized_url,)
@@ -406,14 +432,15 @@ def _article_identity_rows(
         if article.normalized_url is not None and alias_row is None
         else None
     )
-    rows = (doi_row, alias_row, uid_row, direct_url_row)
+    url_row = alias_row if alias_row is not None else direct_url_row
+    uid_row = connection.execute("SELECT * FROM articles WHERE uid = ?", (article.uid,)).fetchone()
+    rows = (doi_row, url_row, uid_row)
     _validate_identity_rows(article, rows)
     return rows
 
 
 def _validate_identity_rows(article: ArticleRecord, rows: tuple[sqlite3.Row | None, ...]) -> None:
-    doi_row, alias_row, _, direct_url_row = rows
-    url_row = alias_row if alias_row is not None else direct_url_row
+    doi_row, url_row, _ = rows
     if doi_row is not None and doi_row["journal_id"] != article.journal_id:
         raise RepositoryConflictError(
             f"DOI {article.doi} already belongs to conflicting journal {doi_row['journal_id']}"

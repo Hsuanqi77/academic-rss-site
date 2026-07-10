@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 import pytest
 
@@ -470,6 +471,54 @@ def test_direct_normalized_url_fallback_repairs_missing_alias(
         "SELECT normalized_url, article_uid FROM article_url_aliases"
     ).fetchone()
     assert tuple(alias) == (record.normalized_url, record.uid)
+
+
+def test_direct_url_identity_precedes_candidate_uid_and_survives_merge(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    shared_url = "https://example.com/direct-priority"
+    direct_url_row = article(
+        uid="url:should-survive",
+        normalized_url=shared_url,
+    )
+    candidate_uid_row = article(
+        uid="uid:candidate",
+        normalized_url="https://example.com/candidate-url",
+    )
+    assert upsert_article(connection, direct_url_row) == "inserted"
+    assert upsert_article(connection, candidate_uid_row) == "inserted"
+    replace_article_tags(connection, direct_url_row.uid, [topic("direct-tag", "Direct")])
+    replace_article_tags(
+        connection,
+        candidate_uid_row.uid,
+        [topic("candidate-tag", "Candidate")],
+    )
+    connection.execute(
+        "DELETE FROM article_url_aliases WHERE normalized_url = ?",
+        (shared_url,),
+    )
+    connection.commit()
+    incoming = replace(candidate_uid_row, normalized_url=shared_url)
+
+    assert resolve_article_uid(connection, incoming) == direct_url_row.uid
+    assert upsert_article(connection, incoming) == "updated"
+
+    assert [row["uid"] for row in connection.execute("SELECT uid FROM articles")] == [
+        direct_url_row.uid
+    ]
+    assert {row["tag_id"] for row in connection.execute("SELECT tag_id FROM article_tags")} == {
+        "direct-tag",
+        "candidate-tag",
+    }
+    assert {
+        row["article_uid"]
+        for row in connection.execute("SELECT article_uid FROM article_url_aliases")
+    } == {direct_url_row.uid}
+    assert {
+        row["normalized_url"]
+        for row in connection.execute("SELECT normalized_url FROM article_url_aliases")
+    } == {shared_url, candidate_uid_row.normalized_url}
 
 
 def test_lower_quality_url_record_does_not_erase_enriched_metadata(
@@ -1035,6 +1084,40 @@ def test_replace_article_tags_rejects_missing_article(connection: sqlite3.Connec
         replace_article_tags(connection, "missing", [topic("acoustics", "Acoustics")])
 
 
+@pytest.mark.parametrize(
+    "conflicting_topics",
+    [
+        [topic("same-id", "First"), topic("same-id", "Second")],
+        [topic("first-id", "Same label"), topic("second-id", "Same label")],
+    ],
+)
+def test_replace_article_tags_rejects_conflicting_input_before_mutation(
+    connection: sqlite3.Connection,
+    conflicting_topics: list[TopicConfig],
+) -> None:
+    register_default_journal(connection)
+    record = article()
+    assert upsert_article(connection, record) == "inserted"
+    replace_article_tags(connection, record.uid, [topic("existing", "Existing")])
+    before_tags = [tuple(row) for row in connection.execute("SELECT id, label FROM tags")]
+    before_links = [
+        tuple(row) for row in connection.execute("SELECT article_uid, tag_id FROM article_tags")
+    ]
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(RepositoryConflictError, match="conflicting.*tag|duplicate tag label"):
+            replace_article_tags(connection, record.uid, conflicting_topics)
+    finally:
+        connection.set_trace_callback(None)
+
+    assert statements == []
+    assert [tuple(row) for row in connection.execute("SELECT id, label FROM tags")] == before_tags
+    assert [
+        tuple(row) for row in connection.execute("SELECT article_uid, tag_id FROM article_tags")
+    ] == before_links
+
+
 def test_repository_operation_inside_outer_transaction_does_not_commit_caller_work(
     connection: sqlite3.Connection,
 ) -> None:
@@ -1063,6 +1146,7 @@ def test_repository_operation_inside_outer_transaction_does_not_commit_caller_wo
 
 def test_owned_write_transaction_begins_immediate(connection: sqlite3.Connection) -> None:
     statements: list[str] = []
+    connection.execute("PRAGMA busy_timeout = 4321")
     connection.set_trace_callback(statements.append)
     try:
         create_run(connection)
@@ -1071,21 +1155,27 @@ def test_owned_write_transaction_begins_immediate(connection: sqlite3.Connection
 
     assert "BEGIN IMMEDIATE" in statements
     assert "BEGIN" not in statements
+    assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 4321
 
 
-def test_busy_write_acquisition_retries_then_raises_clear_error(tmp_path: Path) -> None:
+def test_busy_write_acquisition_honors_budget_and_restores_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_path = tmp_path / "busy.sqlite3"
     holder = database_module.connect_database(database_path)
     contender = database_module.connect_database(database_path)
     try:
         database_module.initialize_database(holder)
-        contender.execute("PRAGMA busy_timeout = 1")
+        contender.execute("PRAGMA busy_timeout = 5000")
         holder.execute("BEGIN IMMEDIATE")
+        monkeypatch.setattr(database_module, "_WRITE_TRANSACTION_BUDGET_SECONDS", 0.05)
+        started_at = monotonic()
 
-        with pytest.raises(RepositoryBusyError, match="immediate write transaction.*attempts"):
+        with pytest.raises(RepositoryBusyError, match="immediate write transaction.*0.050"):
             create_run(contender)
 
-        assert contender.execute("PRAGMA busy_timeout").fetchone()[0] == 1
+        assert monotonic() - started_at < 0.5
+        assert contender.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
         assert contender.in_transaction is False
     finally:
         if holder.in_transaction:
