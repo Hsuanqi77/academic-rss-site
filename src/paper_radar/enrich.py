@@ -40,7 +40,7 @@ def enrich_article(
     if not isinstance(article.doi, str) or not article.doi.strip():
         return article
 
-    email = _optional_unpaywall_email(unpaywall_email)
+    email = validate_unpaywall_email(unpaywall_email)
     request_doi = article.doi.strip()
     try:
         encoded_doi = quote(request_doi, safe="")
@@ -257,7 +257,9 @@ def _abstract_is_low_quality(value: str | None) -> bool:
     return not enriched_field_has_meaningful_value("abstract", abstract)
 
 
-def _optional_unpaywall_email(value: str | None) -> str | None:
+def validate_unpaywall_email(value: str | None) -> str | None:
+    """Return a validated optional Unpaywall email, treating blank text as unset."""
+
     if value is None:
         return None
     if not isinstance(value, str):

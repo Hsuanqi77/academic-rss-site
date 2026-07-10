@@ -127,3 +127,14 @@ class FeedFetchResult:
     last_modified: str | None
     not_modified: bool
     effective_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunSummary:
+    status: str
+    inserted: int
+    updated: int
+    skipped: int
+    failed: int
+    successful_feeds: tuple[str, ...]
+    failed_feeds: tuple[str, ...]
