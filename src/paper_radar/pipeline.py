@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -28,6 +29,7 @@ from paper_radar.normalize import normalize_item
 
 
 _MAX_ITEM_ERRORS = 20
+_MAX_JOURNAL_STATUS_ERRORS = 20
 _MAX_NOTE_FEEDS = 100
 _MAX_NOTE_IDENTIFIER_LENGTH = 128
 
@@ -64,6 +66,8 @@ def update_database(
     failed_feeds: list[str] = []
     item_errors: list[dict[str, object]] = []
     omitted_item_errors = 0
+    journal_status_errors: list[dict[str, str]] = []
+    omitted_journal_status_errors = 0
 
     try:
         connection = connect_database(Path(database_path))
@@ -179,7 +183,7 @@ def update_database(
                 successful_feeds.append(feed.id)
             except AssertionError:
                 raise
-            except Exception as exc:
+            except Exception as feed_error:
                 failed += 1
                 failed_feeds.append(feed.id)
                 try:
@@ -187,10 +191,24 @@ def update_database(
                         connection,
                         feed.id,
                         status="error",
-                        error=_safe_diagnostic(exc),
+                        error=_safe_diagnostic(feed_error),
                     )
-                except Exception:
-                    pass
+                except (sqlite3.Error, KeyError) as journal_error:
+                    if len(journal_status_errors) < _MAX_JOURNAL_STATUS_ERRORS:
+                        journal_status_errors.append(
+                            {
+                                "feed_id": _bounded_identifier(feed.id),
+                                "stage": "mark_failed_feed_status",
+                                "error": _safe_diagnostic(journal_error),
+                                "feed_error": _safe_diagnostic(feed_error),
+                            }
+                        )
+                    else:
+                        omitted_journal_status_errors += 1
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except BaseException as journal_error:
+                    raise journal_error from feed_error
 
         status, diagnostic = _terminal_status(
             enabled_count=len(enabled_feeds),
@@ -202,6 +220,8 @@ def update_database(
             failed_feeds,
             item_errors,
             omitted_item_errors,
+            journal_status_errors,
+            omitted_journal_status_errors,
             diagnostic=diagnostic,
         )
         summary = RunSummary(
@@ -234,6 +254,8 @@ def update_database(
                 failed_feeds,
                 item_errors,
                 omitted_item_errors,
+                journal_status_errors,
+                omitted_journal_status_errors,
                 diagnostic=_safe_diagnostic(exc),
             )
             try:
@@ -292,6 +314,8 @@ def _run_notes(
     failed_feeds: list[str],
     item_errors: list[dict[str, object]],
     omitted_item_errors: int,
+    journal_status_errors: list[dict[str, str]],
+    omitted_journal_status_errors: int,
     *,
     diagnostic: str | None,
 ) -> str:
@@ -304,6 +328,8 @@ def _run_notes(
         ],
         "item_errors": item_errors,
         "omitted_item_errors": omitted_item_errors,
+        "journal_status_errors": journal_status_errors,
+        "omitted_journal_status_errors": omitted_journal_status_errors,
     }
     omitted_successful = max(0, len(successful_feeds) - _MAX_NOTE_FEEDS)
     omitted_failed = max(0, len(failed_feeds) - _MAX_NOTE_FEEDS)

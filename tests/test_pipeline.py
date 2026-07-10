@@ -362,6 +362,99 @@ def test_unexpected_control_or_programming_error_is_finalized_then_propagated(
     assert json.loads(run["notes"])["diagnostic"] == type(exception).__name__
 
 
+def test_journal_status_programming_error_propagates_with_feed_error_cause_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    real_connection = connect_database(database_path)
+
+    class ConnectionProxy:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_connection, name)
+
+        def close(self) -> None:
+            self.closed = True
+            real_connection.close()
+
+    proxy = ConnectionProxy()
+    monkeypatch.setattr(pipeline_module, "connect_database", lambda path: proxy)
+    original_mark = pipeline_module.mark_journal_status
+
+    def broken_mark(*args: object, status: str, **kwargs: object) -> None:
+        if status == "error":
+            raise AssertionError("journal status programming bug")
+        original_mark(*args, status=status, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_module, "mark_journal_status", broken_mark)
+    feed_error = FeedParseError("feed parse failed")
+
+    with pytest.raises(AssertionError, match="journal status programming bug") as captured:
+        update_database(
+            database_path,
+            [_feed("bad")],
+            [],
+            fetcher=lambda *args, **kwargs: (_ for _ in ()).throw(feed_error),
+            enricher=_identity_enricher,
+            min_interval=0,
+        )
+
+    assert captured.value.__cause__ is feed_error
+    assert proxy.closed is True
+    run = _rows(database_path, "SELECT status, failed_count, notes FROM runs_log")[0]
+    assert (run["status"], run["failed_count"]) == ("error", 1)
+    assert json.loads(run["notes"])["diagnostic"] == "AssertionError"
+
+
+def test_journal_status_sqlite_error_is_not_silent_and_next_feed_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    original_mark = pipeline_module.mark_journal_status
+
+    def intermittently_broken_mark(*args: object, status: str, **kwargs: object) -> None:
+        if status == "error":
+            raise sqlite3.OperationalError("secret journal detail")
+        original_mark(*args, status=status, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_module, "mark_journal_status", intermittently_broken_mark)
+
+    def fetcher(client: httpx.Client, feed: FeedConfig, **kwargs: object) -> FeedFetchResult:
+        if feed.id == "bad":
+            raise FeedParseError("original secret feed detail")
+        return _result()
+
+    summary = update_database(
+        database_path,
+        [_feed("bad"), _feed("good")],
+        [],
+        fetcher=fetcher,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+
+    assert summary == RunSummary("partial", 0, 0, 0, 1, ("good",), ("bad",))
+    run = _rows(database_path, "SELECT status, failed_count, notes FROM runs_log")[0]
+    assert (run["status"], run["failed_count"]) == ("partial", 1)
+    notes = json.loads(run["notes"])
+    assert notes["journal_status_errors"] == [
+        {
+            "error": "OperationalError",
+            "feed_error": "FeedParseError",
+            "feed_id": "bad",
+            "stage": "mark_failed_feed_status",
+        }
+    ]
+    assert notes["omitted_journal_status_errors"] == 0
+    assert "secret" not in run["notes"]
+    journals = {
+        row["id"]: row["last_status"] for row in _rows(database_path, "SELECT * FROM journals")
+    }
+    assert journals == {"bad": "never", "good": "ok"}
+
+
 def test_all_disabled_is_error_without_fetching_or_false_failure_count(tmp_path: Path) -> None:
     database_path = tmp_path / "radar.db"
 
