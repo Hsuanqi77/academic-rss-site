@@ -20,3 +20,4 @@ class FeedFetchResult:
     etag: str | None
     last_modified: str | None
     not_modified: bool
+    effective_url: str | None = None
