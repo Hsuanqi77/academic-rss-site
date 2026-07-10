@@ -1,5 +1,7 @@
 import re
+import zlib
 from collections.abc import Mapping
+from html.parser import HTMLParser
 from time import monotonic
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
@@ -14,6 +16,12 @@ from paper_radar.models import FeedFetchResult, RawFeedItem
 USER_AGENT = "paper-radar/0.1 (+personal academic RSS reader)"
 MAX_FEED_BYTES = 8 * 1024 * 1024
 FETCH_DEADLINE_SECONDS = 30.0
+REQUEST_TIMEOUT_SECONDS = 25.0
+READ_TIMEOUT_SLICE_SECONDS = 1.0
+DECODE_CHUNK_BYTES = 64 * 1024
+MAX_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+_SUPPORTED_CONTENT_ENCODINGS = {"", "identity", "gzip", "deflate"}
 _DOI_PREFIX_PATTERN = re.compile(r"10\.\d{4,9}/", re.IGNORECASE)
 _DOI_LABEL_PATTERN = re.compile(r"^doi\s*:\s*", re.IGNORECASE)
 _DOI_PROSE_PUNCTUATION = ".,!?\"'"
@@ -28,6 +36,40 @@ class FeedParseError(ValueError):
 
 class FeedFetchError(RuntimeError):
     pass
+
+
+class _PlainTextHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+class _DeflateDecoder:
+    def __init__(self) -> None:
+        self._decoder = zlib.decompressobj(zlib.MAX_WBITS)
+        self._first_chunk = True
+
+    def decompress(self, data: bytes, max_output: int) -> bytes:
+        try:
+            output = self._decoder.decompress(data, max_output)
+        except zlib.error:
+            if not self._first_chunk:
+                raise
+            self._decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+            output = self._decoder.decompress(data, max_output)
+        self._first_chunk = False
+        return output
+
+    @property
+    def unconsumed_tail(self) -> bytes:
+        return self._decoder.unconsumed_tail
+
+    @property
+    def eof(self) -> bool:
+        return self._decoder.eof
 
 
 def parse_feed(
@@ -94,8 +136,22 @@ def parse_feed_bytes(
         raise FeedParseError(
             f"could not parse feed {feed_id} ({feed_url}): not a recognized RSS or Atom feed"
         )
+    if not parsed.entries and not _has_required_feed_metadata(parsed):
+        raise FeedParseError(
+            f"could not parse feed {feed_id} ({feed_url}): missing required feed metadata"
+        )
 
     return items
+
+
+def _has_required_feed_metadata(parsed: Mapping[str, Any]) -> bool:
+    feed = parsed.get("feed")
+    if not isinstance(feed, Mapping):
+        return False
+    version = parsed.get("version")
+    if version == "atom10":
+        return all(_text(feed.get(field)) is not None for field in ("title", "id", "updated"))
+    return all(_text(feed.get(field)) is not None for field in ("title", "link", "description"))
 
 
 def fetch_feed(
@@ -105,58 +161,69 @@ def fetch_feed(
     etag: str | None = None,
     last_modified: str | None = None,
 ) -> FeedFetchResult:
-    """Fetch a bounded feed, following redirects but rejecting a final HTTP URL."""
-    headers = {"User-Agent": USER_AGENT}
+    """Fetch a bounded feed, following HTTPS redirects without allowing downgrades."""
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept-Encoding": "gzip, deflate, identity",
+    }
     if etag:
         headers["If-None-Match"] = etag
     if last_modified:
         headers["If-Modified-Since"] = last_modified
 
     started_at = monotonic()
-    with client.stream(
-        "GET",
-        feed.feed_url,
-        headers=headers,
-        timeout=25.0,
-        follow_redirects=True,
-    ) as response:
-        _require_https_effective_url(response.url)
-        response_etag = response.headers.get("ETag")
-        response_last_modified = response.headers.get("Last-Modified")
+    current_url = httpx.URL(feed.feed_url)
+    redirect_count = 0
+    while True:
+        timeout_extensions = _request_timeout_extensions(started_at, current_url)
+        with client.stream(
+            "GET",
+            current_url,
+            headers=headers,
+            extensions={"timeout": timeout_extensions},
+            follow_redirects=False,
+        ) as response:
+            if response.status_code in _REDIRECT_STATUS_CODES:
+                location = response.headers.get("Location")
+                if location is None:
+                    raise FeedFetchError(
+                        f"redirect response missing Location header: {response.url}"
+                    )
+                if redirect_count >= MAX_REDIRECTS:
+                    raise FeedFetchError(
+                        f"redirect limit exceeded after {MAX_REDIRECTS} redirects: {response.url}"
+                    )
+                next_url = response.url.join(location)
+                _require_https_redirect_target(next_url)
+                current_url = next_url
+                redirect_count += 1
+                continue
 
-        if response.status_code == httpx.codes.NOT_MODIFIED:
+            response_etag = response.headers.get("ETag")
+            response_last_modified = response.headers.get("Last-Modified")
+
+            if response.status_code == httpx.codes.NOT_MODIFIED:
+                _enforce_fetch_deadline(started_at, response.url)
+                return FeedFetchResult(
+                    content=None,
+                    etag=response_etag or etag,
+                    last_modified=response_last_modified or last_modified,
+                    not_modified=True,
+                    effective_url=str(response.url),
+                )
+
+            response.raise_for_status()
             _enforce_fetch_deadline(started_at, response.url)
+            _reject_declared_oversize(response)
+            content = _read_bounded_content(response, started_at)
+
             return FeedFetchResult(
-                content=None,
-                etag=response_etag or etag,
-                last_modified=response_last_modified or last_modified,
-                not_modified=True,
+                content=content,
+                etag=response_etag,
+                last_modified=response_last_modified,
+                not_modified=False,
                 effective_url=str(response.url),
             )
-
-        response.raise_for_status()
-        _enforce_fetch_deadline(started_at, response.url)
-        _reject_declared_oversize(response)
-
-        content = bytearray()
-        decoded_size = 0
-        for chunk in response.iter_bytes():
-            _enforce_fetch_deadline(started_at, response.url)
-            decoded_size += len(chunk)
-            if decoded_size > MAX_FEED_BYTES:
-                raise FeedFetchError(
-                    f"decoded feed size exceeds maximum of {MAX_FEED_BYTES} bytes: {response.url}"
-                )
-            content.extend(chunk)
-        _enforce_fetch_deadline(started_at, response.url)
-
-        return FeedFetchResult(
-            content=bytes(content),
-            etag=response_etag,
-            last_modified=response_last_modified,
-            not_modified=False,
-            effective_url=str(response.url),
-        )
 
 
 def _reject_declared_oversize(response: httpx.Response) -> None:
@@ -174,9 +241,135 @@ def _reject_declared_oversize(response: httpx.Response) -> None:
         )
 
 
-def _require_https_effective_url(url: httpx.URL) -> None:
+def _read_bounded_content(response: httpx.Response, started_at: float) -> bytes:
+    content_encoding = response.headers.get("Content-Encoding", "").strip().lower()
+    if content_encoding not in _SUPPORTED_CONTENT_ENCODINGS:
+        raise FeedFetchError(f"unsupported Content-Encoding {content_encoding!r}: {response.url}")
+
+    decoder = _content_decoder(content_encoding)
+    content = bytearray()
+    raw_size = 0
+    raw_iterator = iter(response.iter_raw())
+    captured_read_timeout = response.request.extensions["timeout"]["read"]
+    while True:
+        try:
+            raw_chunk = _next_raw_chunk(
+                raw_iterator,
+                response,
+                started_at,
+                captured_read_timeout,
+            )
+        except StopIteration:
+            break
+
+        raw_size += len(raw_chunk)
+        if raw_size > MAX_FEED_BYTES:
+            raise FeedFetchError(
+                f"raw feed size exceeds maximum of {MAX_FEED_BYTES} bytes: {response.url}"
+            )
+
+        if decoder is None:
+            _append_decoded(content, raw_chunk, response.url)
+        else:
+            try:
+                for decoded_chunk in _decode_bounded(decoder, raw_chunk, len(content)):
+                    _append_decoded(content, decoded_chunk, response.url)
+            except zlib.error as exc:
+                raise FeedFetchError(
+                    f"invalid {content_encoding} feed body: {response.url}: {exc}"
+                ) from exc
+
+    if decoder is not None and not decoder.eof:
+        raise FeedFetchError(f"truncated {content_encoding} feed body: {response.url}")
+    _enforce_fetch_deadline(started_at, response.url)
+    return bytes(content)
+
+
+def _content_decoder(content_encoding: str):
+    if content_encoding == "gzip":
+        return zlib.decompressobj(zlib.MAX_WBITS | 16)
+    if content_encoding == "deflate":
+        return _DeflateDecoder()
+    return None
+
+
+def _decode_bounded(decoder, raw_chunk: bytes, decoded_size: int):
+    pending = raw_chunk
+    while True:
+        remaining = MAX_FEED_BYTES - decoded_size
+        max_output = min(DECODE_CHUNK_BYTES, remaining + 1)
+        decoded_chunk = _bounded_decompress(decoder, pending, max_output)
+        pending = decoder.unconsumed_tail
+        if decoded_chunk:
+            yield decoded_chunk
+            decoded_size += len(decoded_chunk)
+        if pending:
+            continue
+        if decoded_chunk and len(decoded_chunk) == max_output:
+            pending = b""
+            continue
+        break
+
+
+def _bounded_decompress(decoder, data: bytes, max_output: int) -> bytes:
+    return decoder.decompress(data, max_output)
+
+
+def _append_decoded(content: bytearray, chunk: bytes, url: httpx.URL) -> None:
+    if len(content) + len(chunk) > MAX_FEED_BYTES:
+        raise FeedFetchError(f"decoded feed size exceeds maximum of {MAX_FEED_BYTES} bytes: {url}")
+    content.extend(chunk)
+
+
+def _next_raw_chunk(
+    raw_iterator,
+    response: httpx.Response,
+    started_at: float,
+    captured_read_timeout: float,
+) -> bytes:
+    remaining = _remaining_fetch_seconds(started_at, response.url)
+    # httpcore 1.0 captures the HTTP/1.1 body-read timeout on the first next().
+    # Keep that captured slice below the hard deadline; HTTP/2 and custom
+    # transports also observe the refreshed extension on every subsequent read.
+    if remaining <= captured_read_timeout:
+        raise FeedFetchError(
+            f"total fetch deadline of {FETCH_DEADLINE_SECONDS:g} seconds exceeded before read: "
+            f"{response.url}"
+        )
+    response.request.extensions["timeout"]["read"] = min(
+        captured_read_timeout,
+        remaining / 2,
+    )
+    chunk = next(raw_iterator)
+    _enforce_fetch_deadline(started_at, response.url)
+    return chunk
+
+
+def _require_https_redirect_target(url: httpx.URL) -> None:
     if url.scheme != "https":
-        raise FeedFetchError(f"final feed URL must use HTTPS: {url}")
+        raise FeedFetchError(
+            f"redirect target must use HTTPS; final feed URL must use HTTPS: {url}"
+        )
+
+
+def _remaining_fetch_seconds(started_at: float, url: httpx.URL) -> float:
+    remaining = FETCH_DEADLINE_SECONDS - (monotonic() - started_at)
+    if remaining <= 0:
+        raise FeedFetchError(
+            f"total fetch deadline of {FETCH_DEADLINE_SECONDS:g} seconds exceeded: {url}"
+        )
+    return remaining
+
+
+def _request_timeout_extensions(started_at: float, url: httpx.URL) -> dict[str, float]:
+    remaining = _remaining_fetch_seconds(started_at, url)
+    phase_timeout = min(REQUEST_TIMEOUT_SECONDS, remaining / 4)
+    return {
+        "connect": phase_timeout,
+        "read": min(READ_TIMEOUT_SLICE_SECONDS, phase_timeout),
+        "write": phase_timeout,
+        "pool": phase_timeout,
+    }
 
 
 def _enforce_fetch_deadline(started_at: float, url: httpx.URL) -> None:
@@ -221,19 +414,34 @@ def _extract_authors(entry: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _extract_doi(entry: Mapping[str, Any], summary: str | None, link: str) -> str | None:
-    candidates = (
-        (entry.get("prism_doi"), False),
-        (entry.get("dc_identifier"), False),
-        (entry.get("id"), False),
-        (entry.get("guid"), False),
-        (summary, True),
-        (link, True),
-    )
-    for candidate, free_text in candidates:
-        doi = _normalize_doi(candidate, free_text=free_text)
+    for candidate in (
+        entry.get("prism_doi"),
+        entry.get("dc_identifier"),
+        entry.get("id"),
+        entry.get("guid"),
+    ):
+        doi = _normalize_doi(candidate, free_text=False)
         if doi is not None:
             return doi
-    return None
+
+    summary_text = _html_to_plain_text(summary)
+    doi = _normalize_doi(summary_text, free_text=True)
+    return doi if doi is not None else _extract_doi_from_link(link)
+
+
+def _html_to_plain_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parser = _PlainTextHTMLParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(parser.parts)
+
+
+def _extract_doi_from_link(link: str) -> str | None:
+    parsed_url = urlsplit(link)
+    path = unquote(parsed_url.path)
+    return _normalize_doi(path, free_text=True)
 
 
 def _normalize_doi(value: Any, *, free_text: bool) -> str | None:

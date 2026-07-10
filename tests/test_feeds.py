@@ -2,6 +2,7 @@ from dataclasses import FrozenInstanceError
 import gzip
 from pathlib import Path
 from types import SimpleNamespace
+import zlib
 
 import httpx
 import pytest
@@ -298,6 +299,58 @@ def test_parse_feed_distinguishes_explicit_terminal_period_from_prose_period(
     assert item.doi == "10.1234/explicit."
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "<p>See doi:10.1234/foo.</p>",
+        "<strong>doi:10.1234/foo</strong>",
+    ],
+)
+def test_parse_feed_extracts_doi_from_html_summary_text_only(
+    summary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = SimpleNamespace(
+        bozo=False,
+        version="rss20",
+        entries=[
+            {
+                "title": "HTML summary DOI",
+                "link": "https://example.org/html-summary",
+                "summary": summary,
+            }
+        ],
+    )
+    monkeypatch.setattr(feeds_module.feedparser, "parse", lambda *args, **kwargs: parsed)
+
+    item = parse_feed(b"ignored", "fixture", "https://example.org/feed.xml")[0]
+
+    assert item.doi == "10.1234/foo"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://publisher.example/articles/10.1234/foo?utm_source=rss",
+        "https://publisher.example/articles/10.1234/foo#fragment",
+    ],
+)
+def test_parse_feed_extracts_doi_from_url_path_without_query_or_fragment(
+    link: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = SimpleNamespace(
+        bozo=False,
+        version="rss20",
+        entries=[{"title": "URL DOI", "link": link, "id": "publisher-item"}],
+    )
+    monkeypatch.setattr(feeds_module.feedparser, "parse", lambda *args, **kwargs: parsed)
+
+    item = parse_feed(b"ignored", "fixture", "https://example.org/feed.xml")[0]
+
+    assert item.doi == "10.1234/foo"
+
+
 def test_parse_feed_uses_trimmed_singular_author_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,6 +440,19 @@ def test_parse_feed_accepts_recognized_empty_feeds(content: bytes) -> None:
     assert parse_feed(content, "fixture", "https://example.org/feed.xml") == []
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"<rss version='2.0'/>",
+        b"<rss><channel/></rss>",
+        b"<feed xmlns='http://www.w3.org/2005/Atom'/>",
+    ],
+)
+def test_parse_feed_rejects_empty_containers_without_feed_metadata(content: bytes) -> None:
+    with pytest.raises(FeedParseError, match="could not parse feed"):
+        parse_feed(content, "fixture", "https://example.org/feed.xml")
+
+
 def test_parse_feed_bytes_resolves_relative_atom_links_against_effective_url() -> None:
     content = b"""\
         <feed xmlns="http://www.w3.org/2005/Atom">
@@ -449,14 +515,13 @@ def test_fetch_feed_sends_conditional_headers_and_handles_not_modified(
 
     request = route.calls.last.request
     assert request.headers["User-Agent"] == USER_AGENT
+    assert request.headers["Accept-Encoding"] == "gzip, deflate, identity"
     assert request.headers["If-None-Match"] == '"prior"'
     assert request.headers["If-Modified-Since"] == "Thu, 02 Jul 2026 08:00:00 GMT"
-    assert request.extensions["timeout"] == {
-        "connect": 25.0,
-        "read": 25.0,
-        "write": 25.0,
-        "pool": 25.0,
-    }
+    request_timeouts = request.extensions["timeout"]
+    assert set(request_timeouts) == {"connect", "read", "write", "pool"}
+    assert all(0 < timeout <= 25.0 for timeout in request_timeouts.values())
+    assert request_timeouts["read"] <= feeds_module.READ_TIMEOUT_SLICE_SECONDS
     assert result == FeedFetchResult(
         content=None,
         etag=expected_etag,
@@ -530,7 +595,9 @@ def test_fetch_feed_rejects_final_http_url_after_redirect() -> None:
         respx.get("https://example.org/feed.xml").mock(
             return_value=httpx.Response(302, headers={"Location": insecure_url})
         )
-        respx.get(insecure_url).mock(return_value=httpx.Response(200, stream=insecure_stream))
+        insecure_route = respx.get(insecure_url).mock(
+            return_value=httpx.Response(200, stream=insecure_stream)
+        )
         with httpx.Client() as client:
             with pytest.raises(
                 feeds_module.FeedFetchError,
@@ -539,7 +606,70 @@ def test_fetch_feed_rejects_final_http_url_after_redirect() -> None:
                 fetch_feed(client, make_feed())
 
     assert insecure_stream.iterated is False
-    assert insecure_stream.closed is True
+    assert insecure_stream.closed is False
+    assert insecure_route.called is False
+
+
+def test_fetch_feed_rejects_intermediate_http_redirect_before_requesting_it() -> None:
+    insecure_url = "http://insecure.example.org/intermediate.xml"
+    final_url = "https://cdn.example.org/final.xml"
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(302, headers={"Location": insecure_url})
+        )
+        insecure_route = router.get(insecure_url).mock(
+            return_value=httpx.Response(302, headers={"Location": final_url})
+        )
+        final_route = router.get(final_url).mock(
+            return_value=httpx.Response(200, content=b"<rss />")
+        )
+        with httpx.Client() as client:
+            with pytest.raises(
+                feeds_module.FeedFetchError,
+                match="redirect target must use HTTPS",
+            ):
+                fetch_feed(client, make_feed())
+
+    assert insecure_route.called is False
+    assert final_route.called is False
+
+
+def test_fetch_feed_rejects_redirect_loop_at_configured_limit() -> None:
+    with respx.mock:
+        route = respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(302, headers={"Location": "/feed.xml"})
+        )
+        with httpx.Client() as client:
+            with pytest.raises(
+                feeds_module.FeedFetchError,
+                match="redirect limit exceeded",
+            ):
+                fetch_feed(client, make_feed())
+
+    assert route.call_count == feeds_module.MAX_REDIRECTS + 1
+
+
+def test_fetch_feed_closes_oversized_redirect_response_without_consuming_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(feeds_module, "MAX_FEED_BYTES", 5)
+    redirect_stream = TrackingStream([b"x" * 6])
+    final_url = "https://cdn.example.org/final.xml"
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                302,
+                headers={"Location": final_url},
+                stream=redirect_stream,
+            )
+        )
+        respx.get(final_url).mock(return_value=httpx.Response(200, content=b"<x/>"))
+        with httpx.Client() as client:
+            result = fetch_feed(client, make_feed())
+
+    assert result.effective_url == final_url
+    assert redirect_stream.iterated is False
+    assert redirect_stream.closed is True
 
 
 def test_fetch_feed_propagates_http_status_errors_with_request_context() -> None:
@@ -626,3 +756,117 @@ def test_fetch_feed_enforces_total_elapsed_deadline_without_sleeping(
 
     assert isinstance(raised.value, feeds_module.FeedFetchError)
     assert stream.closed is True
+
+
+def test_fetch_feed_rejects_unsupported_content_encoding_before_streaming() -> None:
+    stream = TrackingStream([b"unsupported"])
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"Content-Encoding": "br"},
+                stream=stream,
+            )
+        )
+        with httpx.Client() as client:
+            with pytest.raises(
+                feeds_module.FeedFetchError,
+                match="unsupported Content-Encoding",
+            ):
+                fetch_feed(client, make_feed())
+
+    assert stream.iterated is False
+    assert stream.closed is True
+
+
+def test_fetch_feed_decodes_raw_deflate_with_bounded_fallback() -> None:
+    compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    encoded = compressor.compress(b"<rss />") + compressor.flush()
+    stream = TrackingStream([encoded])
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"Content-Encoding": "deflate"},
+                stream=stream,
+            )
+        )
+        with httpx.Client() as client:
+            result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+
+
+def test_fetch_feed_caps_each_gzip_decoder_output_during_compression_bomb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(feeds_module, "MAX_FEED_BYTES", 2_000)
+    monkeypatch.setattr(feeds_module, "DECODE_CHUNK_BYTES", 16, raising=False)
+    observed: list[tuple[int, int]] = []
+
+    def observing_decompress(decoder, data: bytes, max_output: int) -> bytes:
+        output = decoder.decompress(data, max_output)
+        observed.append((max_output, len(output)))
+        return output
+
+    monkeypatch.setattr(
+        feeds_module,
+        "_bounded_decompress",
+        observing_decompress,
+        raising=False,
+    )
+    stream = TrackingStream([gzip.compress(b"x" * 1_000_000)])
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                stream=stream,
+            )
+        )
+        with httpx.Client() as client:
+            with pytest.raises(feeds_module.FeedFetchError, match="decoded feed size"):
+                fetch_feed(client, make_feed())
+
+    assert observed
+    assert max(requested for requested, _ in observed) <= 16
+    assert max(produced for _, produced in observed) <= 16
+
+
+def test_fetch_feed_propagates_decreasing_remaining_timeouts_without_sleeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr(feeds_module, "monotonic", lambda: now[0])
+    monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 12.0)
+    monkeypatch.setattr(feeds_module, "READ_TIMEOUT_SLICE_SECONDS", 1.0, raising=False)
+    hop_timeouts: list[dict[str, float]] = []
+    read_timeouts: list[float] = []
+
+    class TimeoutAwareStream(httpx.SyncByteStream):
+        def __init__(self, request: httpx.Request) -> None:
+            self.request = request
+
+        def __iter__(self):
+            for chunk in (b"<rss", b" />"):
+                read_timeouts.append(self.request.extensions["timeout"]["read"])
+                now[0] += 0.25
+                yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hop_timeouts.append(dict(request.extensions["timeout"]))
+        if len(hop_timeouts) == 1:
+            now[0] += 4.0
+            return httpx.Response(302, headers={"Location": "/final.xml"})
+        return httpx.Response(200, stream=TimeoutAwareStream(request))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+    assert len(hop_timeouts) == 2
+    assert hop_timeouts[0]["connect"] <= 3.0
+    assert hop_timeouts[1]["connect"] < hop_timeouts[0]["connect"]
+    assert read_timeouts
+    assert all(timeout <= 1.0 for timeout in read_timeouts)
+    assert read_timeouts == sorted(read_timeouts, reverse=True)
