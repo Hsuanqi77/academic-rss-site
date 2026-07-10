@@ -186,13 +186,24 @@ def fetch_feed(
     redirect_count = 0
     while True:
         timeout_extensions = _request_timeout_extensions(started_at, current_url)
-        request = client.build_request(
+        owned_client = _owned_direct_client(client, current_url)
+        request_client = owned_client or client
+        request = request_client.build_request(
             "GET",
             current_url,
             headers=headers,
             extensions={"timeout": timeout_extensions},
         )
-        response = _send_request_with_deadline(client, request, started_at)
+        try:
+            response = _send_request_with_deadline(
+                request_client,
+                request,
+                started_at,
+                abort_transport=owned_client is not None,
+            )
+        except BaseException:
+            _release_owned_client(client, owned_client)
+            raise
         try:
             if response.status_code in _REDIRECT_STATUS_CODES:
                 location = response.headers.get("Location")
@@ -225,8 +236,11 @@ def fetch_feed(
 
             response.raise_for_status()
             _enforce_fetch_deadline(started_at, response.url)
-            _reject_declared_oversize(response)
-            content = _read_bounded_content(response, started_at)
+            if response.is_stream_consumed:
+                content = _read_consumed_content(response)
+            else:
+                _reject_declared_oversize(response)
+                content = _read_bounded_content(response, started_at)
 
             return FeedFetchResult(
                 content=content,
@@ -237,12 +251,15 @@ def fetch_feed(
             )
         finally:
             response.close()
+            _release_owned_client(client, owned_client)
 
 
 def _send_request_with_deadline(
     client: httpx.Client,
     request: httpx.Request,
     started_at: float,
+    *,
+    abort_transport: bool = True,
 ) -> httpx.Response:
     results: Queue[httpx.Response | BaseException] = Queue(maxsize=1)
     remaining = _remaining_fetch_seconds(started_at, request.url)
@@ -266,7 +283,8 @@ def _send_request_with_deadline(
         result = results.get(timeout=remaining)
     except Empty as exc:
         cancelled.set()
-        _abort_client_transport(client, request.url)
+        if abort_transport:
+            _abort_client_transport(client, request.url)
         _close_queued_response(results)
         raise FeedFetchError(
             f"total fetch deadline of {FETCH_DEADLINE_SECONDS:g} seconds exceeded while "
@@ -279,9 +297,59 @@ def _send_request_with_deadline(
         _enforce_fetch_deadline(started_at, result.url)
     except FeedFetchError:
         result.close()
-        _abort_client_transport(client, request.url)
+        if abort_transport:
+            _abort_client_transport(client, request.url)
         raise
     return result
+
+
+def _owned_direct_client(client: httpx.Client, url: httpx.URL) -> httpx.Client | None:
+    selected_transport = client._transport_for_url(url)  # type: ignore[attr-defined]
+    if selected_transport is not client._transport:  # type: ignore[attr-defined]
+        return None
+    if type(selected_transport) is not httpx.HTTPTransport:
+        return None
+
+    pool = selected_transport._pool  # type: ignore[attr-defined]
+    pool_type = type(pool)
+    backend_type = type(getattr(pool, "_network_backend", None))
+    if not (
+        pool_type.__module__ in {"httpcore", "httpcore._sync.connection_pool"}
+        and pool_type.__name__ == "ConnectionPool"
+        and backend_type.__module__ in {"httpcore", "httpcore._backends.sync"}
+        and backend_type.__name__ == "SyncBackend"
+    ):
+        return None
+
+    transport = httpx.HTTPTransport(
+        verify=pool._ssl_context,
+        http1=pool._http1,
+        http2=pool._http2,
+        limits=httpx.Limits(
+            max_connections=pool._max_connections,
+            max_keepalive_connections=pool._max_keepalive_connections,
+            keepalive_expiry=pool._keepalive_expiry,
+        ),
+        uds=pool._uds,
+        local_address=pool._local_address,
+        retries=pool._retries,
+        socket_options=pool._socket_options,
+    )
+    return httpx.Client(
+        transport=transport,
+        auth=client._auth,  # type: ignore[attr-defined]
+        headers=client.headers,
+        cookies=client.cookies,
+        event_hooks=client._event_hooks,  # type: ignore[attr-defined]
+        default_encoding=client._default_encoding,  # type: ignore[attr-defined]
+    )
+
+
+def _release_owned_client(caller: httpx.Client, owned: httpx.Client | None) -> None:
+    if owned is None:
+        return
+    caller.cookies.update(owned.cookies)
+    owned.close()
 
 
 def _close_queued_response(results: Queue[httpx.Response | BaseException]) -> None:
@@ -314,6 +382,16 @@ def _reject_declared_oversize(response: httpx.Response) -> None:
             f"declared feed size {declared_size} exceeds maximum of {MAX_FEED_BYTES} bytes: "
             f"{response.url}"
         )
+
+
+def _read_consumed_content(response: httpx.Response) -> bytes:
+    content = response.content
+    if len(content) > MAX_FEED_BYTES:
+        raise FeedFetchError(
+            f"consumed feed size {len(content)} exceeds maximum of {MAX_FEED_BYTES} bytes: "
+            f"{response.url}"
+        )
+    return content
 
 
 def _read_bounded_content(response: httpx.Response, started_at: float) -> bytes:

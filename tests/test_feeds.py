@@ -560,6 +560,54 @@ def test_fetch_feed_returns_content_and_response_validators() -> None:
     )
 
 
+def test_fetch_feed_accepts_materialized_mock_transport_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<rss />",
+            headers={"ETag": '"materialized"'},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+    assert result.etag == '"materialized"'
+
+
+def test_fetch_feed_accepts_content_consumed_by_response_hook() -> None:
+    stream = TrackingStream([b"<rss />"])
+
+    def consume(response: httpx.Response) -> None:
+        response.read()
+
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(200, stream=stream)
+        )
+        with httpx.Client(event_hooks={"response": [consume]}) as client:
+            result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+    assert stream.closed is True
+
+
+def test_fetch_feed_rejects_oversized_materialized_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(feeds_module, "MAX_FEED_BYTES", 5)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 6)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            feeds_module.FeedFetchError,
+            match="consumed feed size.*maximum",
+        ):
+            fetch_feed(client, make_feed())
+
+
 def test_fetch_feed_preserves_redirected_effective_url_for_relative_links() -> None:
     content = b"""\
         <feed xmlns="http://www.w3.org/2005/Atom">
@@ -965,21 +1013,26 @@ def test_send_request_absolute_deadline_aborts_slow_drip_headers(
     started_at = feeds_module.monotonic()
     wall_started = perf_counter()
     try:
-        with httpx.Client() as client:
-            request = client.build_request(
-                "GET",
-                url,
-                extensions={
-                    "timeout": {
-                        "connect": 1.0,
-                        "read": 1.0,
-                        "write": 1.0,
-                        "pool": 1.0,
-                    }
-                },
-            )
-            with pytest.raises(feeds_module.FeedFetchError, match="total fetch deadline"):
-                sender(client, request, started_at)
+        with httpx.Client(trust_env=False) as client:
+            owned_client = feeds_module._owned_direct_client(client, url)
+            assert owned_client is not None
+            try:
+                request = owned_client.build_request(
+                    "GET",
+                    url,
+                    extensions={
+                        "timeout": {
+                            "connect": 1.0,
+                            "read": 1.0,
+                            "write": 1.0,
+                            "pool": 1.0,
+                        }
+                    },
+                )
+                with pytest.raises(feeds_module.FeedFetchError, match="total fetch deadline"):
+                    sender(owned_client, request, started_at)
+            finally:
+                owned_client.close()
     finally:
         stop.set()
         listener.close()
@@ -1015,6 +1068,93 @@ def test_header_deadline_closes_response_returned_late_by_custom_transport(
         assert entered.is_set()
         release.set()
         assert closed.wait(timeout=0.5)
+    finally:
+        release.set()
+        client.close()
+
+
+@pytest.mark.parametrize("mounted", [False, True])
+def test_custom_transport_remains_usable_after_timeout_and_late_response_closes(
+    mounted: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = Event()
+    release = Event()
+    late_closed = Event()
+    seen_headers: list[httpx.Headers] = []
+
+    class LateStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"late"
+
+        def close(self) -> None:
+            late_closed.set()
+
+    class StatefulTransport(httpx.BaseTransport):
+        def __init__(self) -> None:
+            self.calls = 0
+            self.close_calls = 0
+            self.closed = False
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if self.closed:
+                raise RuntimeError("transport was closed")
+            self.calls += 1
+            seen_headers.append(request.headers)
+            if self.calls == 1:
+                entered.set()
+                release.wait(timeout=1.0)
+                return httpx.Response(200, stream=LateStream())
+            return httpx.Response(200, content=b"<rss />")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            self.closed = True
+
+    class UnrelatedTransport(httpx.BaseTransport):
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"unrelated-ok")
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    transport = StatefulTransport()
+    unrelated = UnrelatedTransport()
+    client_kwargs = {
+        "headers": {"X-Client": "preserved"},
+        "cookies": {"session": "cookie-value"},
+        "mounts": {"https://unrelated.example": unrelated},
+    }
+    if mounted:
+        client_kwargs["mounts"]["https://example.org"] = transport
+        client = httpx.Client(
+            **client_kwargs,
+        )
+    else:
+        client = httpx.Client(transport=transport, **client_kwargs)
+    try:
+        monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 0.05)
+        with pytest.raises(feeds_module.FeedFetchError, match="total fetch deadline"):
+            fetch_feed(client, make_feed())
+        assert entered.is_set()
+        assert transport.close_calls == 0
+
+        unrelated_response = client.get("https://unrelated.example/ping")
+        assert unrelated_response.content == b"unrelated-ok"
+        assert unrelated.close_calls == 0
+
+        release.set()
+        assert late_closed.wait(timeout=0.5)
+
+        monkeypatch.setattr(feeds_module, "FETCH_DEADLINE_SECONDS", 1.0)
+        result = fetch_feed(client, make_feed())
+        assert result.content == b"<rss />"
+        assert transport.close_calls == 0
+        assert seen_headers[-1]["X-Client"] == "preserved"
+        assert "session=cookie-value" in seen_headers[-1]["Cookie"]
     finally:
         release.set()
         client.close()
