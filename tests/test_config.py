@@ -5,6 +5,9 @@ import pytest
 from paper_radar.config import ConfigError, FeedConfig, TopicConfig, load_feeds, load_topics
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 def write_yaml(tmp_path: Path, content: str) -> Path:
     path = tmp_path / "config.yml"
     path.write_text(content, encoding="utf-8")
@@ -136,6 +139,52 @@ feeds:
         load_feeds(duplicate)
 
 
+@pytest.mark.parametrize(
+    ("feed_id", "feed_url"),
+    [
+        ("malformed-port", "https://example.com:not-a-port/feed.xml"),
+        ("missing-host", "https://:443/feed.xml"),
+        ("invalid-host", "https://-/feed.xml"),
+    ],
+)
+def test_malformed_https_feed_urls_are_rejected(
+    feed_id: str, feed_url: str, tmp_path: Path
+) -> None:
+    path = write_yaml(
+        tmp_path,
+        f"""
+feeds:
+  - id: {feed_id}
+    name: Broken Feed
+    publisher: nature
+    feed_url: {feed_url}
+""",
+    )
+
+    with pytest.raises(ConfigError, match=rf"^feed {feed_id} has invalid feed_url"):
+        load_feeds(path)
+
+
+def test_canonical_feed_urls_must_be_unique(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path,
+        """
+feeds:
+  - id: first
+    name: First Feed
+    publisher: nature
+    feed_url: https://EXAMPLE.com:443/feed.xml
+  - id: second
+    name: Second Feed
+    publisher: nature
+    feed_url: https://example.com/feed.xml
+""",
+    )
+
+    with pytest.raises(ConfigError, match="duplicate feed URL: https://example.com/feed.xml"):
+        load_feeds(path)
+
+
 def test_unknown_publisher_is_rejected(tmp_path: Path) -> None:
     path = write_yaml(
         tmp_path,
@@ -150,6 +199,76 @@ feeds:
 
     with pytest.raises(ConfigError, match="unknown publisher for feed unknown: example"):
         load_feeds(path)
+
+
+@pytest.mark.parametrize(
+    ("loader", "content", "message"),
+    [
+        (
+            load_feeds,
+            """
+feeds:
+  - id: apl
+    name: Applied Physics Letters
+    publisher: aip
+    feed_url: https://example.com/apl.xml
+    enable: false
+""",
+            "feed apl has unknown fields: enable",
+        ),
+        (
+            load_topics,
+            """
+topics:
+  - id: saw
+    label: SAW
+    keywords: [SAW]
+    keyword: surface acoustic wave
+""",
+            "topic saw has unknown fields: keyword",
+        ),
+    ],
+)
+def test_unknown_row_fields_are_rejected(
+    loader, content: str, message: str, tmp_path: Path
+) -> None:
+    path = write_yaml(tmp_path, content)
+
+    with pytest.raises(ConfigError, match=f"^{message}$"):
+        loader(path)
+
+
+@pytest.mark.parametrize(
+    ("loader", "content"),
+    [
+        (
+            load_feeds,
+            """
+feeds:
+  - id: apl
+    id: duplicate
+    name: Applied Physics Letters
+    publisher: aip
+    feed_url: https://example.com/apl.xml
+""",
+        ),
+        (
+            load_topics,
+            """
+topics:
+  - id: saw
+    id: duplicate
+    label: SAW
+    keywords: [SAW]
+""",
+        ),
+    ],
+)
+def test_duplicate_yaml_mapping_keys_are_rejected(loader, content: str, tmp_path: Path) -> None:
+    path = write_yaml(tmp_path, content)
+
+    with pytest.raises(ConfigError, match="duplicate YAML key: id"):
+        loader(path)
 
 
 def test_topic_requires_at_least_one_nonblank_keyword(tmp_path: Path) -> None:
@@ -217,7 +336,7 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
         "advanced-functional-materials",
     ]
 
-    feeds = load_feeds(Path("feeds.yml"))
+    feeds = load_feeds(PROJECT_ROOT / "feeds.yml")
 
     assert [feed.id for feed in feeds] == expected_ids
     ultrasonics_feed = next(feed for feed in feeds if feed.id == "ieee-transactions-ultrasonics")
@@ -245,6 +364,6 @@ def test_seed_configuration_contains_only_approved_topics() -> None:
         "electron-device",
     ]
 
-    topics = load_topics(Path("topics.yml"))
+    topics = load_topics(PROJECT_ROOT / "topics.yml")
 
     assert [topic.id for topic in topics] == expected_ids

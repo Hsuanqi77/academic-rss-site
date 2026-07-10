@@ -1,17 +1,50 @@
+import ipaddress
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
+import httpx
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 
 
 VALID_PUBLISHERS = {"nature", "aip", "ieee", "wiley"}
+_HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$", re.IGNORECASE)
+_FEED_FIELDS = frozenset({"id", "name", "publisher", "feed_url", "enabled", "aliases"})
+_TOPIC_FIELDS = frozenset({"id", "label", "keywords"})
 
 
 class ConfigError(ValueError):
     pass
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[Any, Any]:
+        self.flatten_mapping(node)
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as exc:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable YAML key",
+                    key_node.start_mark,
+                ) from exc
+            if duplicate:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"duplicate YAML key: {key}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +75,7 @@ def load_feeds(path: Path) -> list[FeedConfig]:
             raise ConfigError(f"feed row {index} must be a mapping")
 
         feed_id = _required_text(row, "id", f"feed row {index}")
+        _reject_unknown_fields(row, _FEED_FIELDS, f"feed {feed_id}")
         if feed_id in seen_ids:
             raise ConfigError(f"duplicate feed id: {feed_id}")
 
@@ -52,12 +86,15 @@ def load_feeds(path: Path) -> list[FeedConfig]:
 
         feed_url = _required_text(row, "feed_url", f"feed {feed_id}")
         try:
-            parsed_url = urlsplit(feed_url)
-        except ValueError as exc:
-            raise ConfigError(f"feed {feed_id} must use an HTTPS URL") from exc
-        if parsed_url.scheme.lower() != "https" or not parsed_url.netloc:
+            parsed_url = httpx.URL(feed_url)
+        except httpx.InvalidURL as exc:
+            raise ConfigError(f"feed {feed_id} has invalid feed_url: {exc}") from exc
+        if parsed_url.scheme != "https":
             raise ConfigError(f"feed {feed_id} must use an HTTPS URL")
-        if feed_url in seen_urls:
+        if not _is_valid_host(parsed_url.host):
+            raise ConfigError(f"feed {feed_id} has invalid feed_url: URL must include a valid host")
+        canonical_url = str(parsed_url)
+        if canonical_url in seen_urls:
             raise ConfigError(f"duplicate feed URL: {feed_url}")
 
         enabled = row.get("enabled", True)
@@ -76,7 +113,7 @@ def load_feeds(path: Path) -> list[FeedConfig]:
             )
         )
         seen_ids.add(feed_id)
-        seen_urls.add(feed_url)
+        seen_urls.add(canonical_url)
 
     return feeds
 
@@ -91,6 +128,7 @@ def load_topics(path: Path) -> list[TopicConfig]:
             raise ConfigError(f"topic row {index} must be a mapping")
 
         topic_id = _required_text(row, "id", f"topic row {index}")
+        _reject_unknown_fields(row, _TOPIC_FIELDS, f"topic {topic_id}")
         if topic_id in seen_ids:
             raise ConfigError(f"duplicate topic id: {topic_id}")
 
@@ -116,7 +154,7 @@ def load_topics(path: Path) -> list[TopicConfig]:
 
 def _load_rows(path: Path, key: str) -> list[Any]:
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ConfigError(f"could not read YAML configuration {path}: {exc}") from exc
 
@@ -143,3 +181,24 @@ def _text_tuple(value: Any, context: str) -> tuple[str, ...]:
     if len(normalized) != len(value):
         raise ConfigError(f"{context} must contain only nonblank strings")
     return normalized
+
+
+def _reject_unknown_fields(
+    row: Mapping[str, Any], allowed_fields: frozenset[str], context: str
+) -> None:
+    unknown_fields = set(row) - allowed_fields
+    if unknown_fields:
+        fields = ", ".join(sorted(str(field) for field in unknown_fields))
+        raise ConfigError(f"{context} has unknown fields: {fields}")
+
+
+def _is_valid_host(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if all(character.isdigit() or character == "." for character in host):
+            return False
+        return all(_HOST_LABEL.fullmatch(label) for label in host.rstrip(".").split("."))
+    return True
