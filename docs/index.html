@@ -10,9 +10,9 @@
   <script src="sql-wasm.js"></script>
 </head>
 <body>
-  <a class="skip-link" href="#main-content">跳至论文列表</a>
+  <a class="skip-link" href="#main-content" data-drawer-background>跳至论文列表</a>
 
-  <header class="site-header">
+  <header class="site-header" data-drawer-background>
     <a class="brand" href="./" aria-label="Paper Radar 首页">
       <span class="brand-mark" aria-hidden="true">PR</span>
       <span><strong>Paper Radar</strong><small>科研文献雷达</small></span>
@@ -61,7 +61,7 @@
       <button id="clear-filters" class="secondary" type="button">清除全部筛选</button>
     </aside>
 
-    <section id="papers" class="results" aria-labelledby="results-title">
+    <section id="papers" class="results" aria-labelledby="results-title" data-drawer-background>
       <div class="section-heading">
         <div><p class="eyebrow">LIVE INDEX / 2026</p><h1 id="results-title">最新论文</h1></div>
         <p class="edition">多出版社聚合<br><span>个人研究视窗</span></p>
@@ -86,15 +86,15 @@
     </section>
   </main>
 
-  <section id="data-status" class="info-section" aria-labelledby="data-title">
+  <section id="data-status" class="info-section" aria-labelledby="data-title" data-drawer-background>
     <p class="eyebrow">SYSTEM / 02</p><h2 id="data-title">数据状态</h2>
     <p id="database-summary">数据库尚未加载。更新完成后将在此显示采集时间与来源状态。</p>
   </section>
-  <section id="about" class="info-section" aria-labelledby="about-title">
+  <section id="about" class="info-section" aria-labelledby="about-title" data-drawer-background>
     <p class="eyebrow">NOTES / 03</p><h2 id="about-title">关于</h2>
     <p>本站聚合公开的期刊 RSS 元数据，用于个人科研信息追踪。文章版权归原出版商所有。</p>
   </section>
-  <footer><span>Paper Radar</span><span>PUBLICATION METADATA INSTRUMENT</span></footer>
+  <footer data-drawer-background><span>Paper Radar</span><span>PUBLICATION METADATA INSTRUMENT</span></footer>
 
   <script type="module" src="js/app.js"></script>
 </body>

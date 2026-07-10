@@ -67,6 +67,11 @@ a { color: inherit; }
 .site-header nav a { color: var(--muted); font-size: 13px; text-decoration: none; }
 .site-header nav a:hover { color: var(--copper-dark); }
 .filter-toggle { display: none; margin-left: auto; }
+.badge {
+  display: inline-grid; min-width: 22px; min-height: 22px; margin-left: 3px; padding: 1px 5px;
+  place-items: center; color: #fff; background: var(--copper-dark); border-radius: 999px;
+  font: 700 11px/1 var(--ui); font-variant-numeric: tabular-nums;
+}
 
 .layout {
   display: grid; grid-template-columns: minmax(230px, 286px) minmax(0, 1fr); gap: clamp(22px, 4vw, 56px);
@@ -148,6 +153,7 @@ a { color: inherit; }
 .info-section p:last-child { max-width: 760px; color: var(--muted); }
 footer { display: flex; justify-content: space-between; gap: 20px; padding: 20px clamp(16px, 4vw, 56px); background: var(--ink); color: #d7dedf; font: 10px/1.4 ui-monospace, Consolas, monospace; letter-spacing: .12em; }
 .overlay { position: fixed; z-index: 29; inset: 0; width: 100%; height: 100%; padding: 0; background: rgba(19, 41, 55, .55); border: 0; cursor: default; }
+[data-drawer-background][aria-hidden="true"] { pointer-events: none; }
 
 @media (max-width: 820px) {
   .site-header { min-height: 66px; gap: 12px; }
