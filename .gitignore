@@ -2,7 +2,10 @@
 .worktrees/
 .env
 .venv/
+*.egg-info/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 work/
 outputs/

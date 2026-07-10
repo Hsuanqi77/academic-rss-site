@@ -1,0 +1,43 @@
+topics:
+  - id: baw
+    label: BAW
+    keywords: [bulk acoustic wave, BAW]
+  - id: saw
+    label: SAW
+    keywords: [surface acoustic wave, SAW]
+  - id: fbar
+    label: FBAR
+    keywords: [film bulk acoustic resonator, FBAR]
+  - id: mems
+    label: MEMS
+    keywords: [microelectromechanical, MEMS]
+  - id: aln
+    label: AlN
+    keywords: [aluminum nitride, aluminium nitride, AlN]
+  - id: alscn
+    label: AlScN
+    keywords: [aluminum scandium nitride, aluminium scandium nitride, AlScN]
+  - id: piezoelectric
+    label: Piezoelectric
+    keywords: [piezoelectric, piezoelectricity]
+  - id: ultrasound
+    label: Ultrasound
+    keywords: [ultrasound, ultrasonic]
+  - id: acoustic-resonator
+    label: Acoustic resonator
+    keywords: [acoustic resonator, acoustic filter]
+  - id: microwave
+    label: Microwave
+    keywords: [microwave, millimeter wave, millimetre wave]
+  - id: rf
+    label: RF
+    keywords: [radio frequency, radio-frequency, RF]
+  - id: ferroelectric
+    label: Ferroelectric
+    keywords: [ferroelectric, ferroelectricity]
+  - id: semiconductor
+    label: Semiconductor
+    keywords: [semiconductor, semiconducting]
+  - id: electron-device
+    label: Electron device
+    keywords: [electron device, transistor, diode]

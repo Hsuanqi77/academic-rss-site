@@ -1,0 +1,81 @@
+feeds:
+  - id: nature-communications
+    name: Nature Communications
+    publisher: nature
+    feed_url: https://www.nature.com/ncomms.rss
+  - id: nature-biotechnology
+    name: Nature Biotechnology
+    publisher: nature
+    feed_url: https://www.nature.com/nbt.rss
+  - id: nature-methods
+    name: Nature Methods
+    publisher: nature
+    feed_url: https://www.nature.com/nmeth.rss
+  - id: nature
+    name: Nature
+    publisher: nature
+    feed_url: https://www.nature.com/nature.rss
+  - id: nature-cancer
+    name: Nature Cancer
+    publisher: nature
+    feed_url: https://www.nature.com/natcancer.rss
+  - id: nature-machine-intelligence
+    name: Nature Machine Intelligence
+    publisher: nature
+    feed_url: https://www.nature.com/natmachintell.rss
+  - id: nature-computational-science
+    name: Nature Computational Science
+    publisher: nature
+    feed_url: https://www.nature.com/natcomputsci.rss
+  - id: nature-reviews-molecular-cell-biology
+    name: Nature Reviews Molecular Cell Biology
+    publisher: nature
+    feed_url: https://www.nature.com/nrm.rss
+  - id: nature-reviews-genetics
+    name: Nature Reviews Genetics
+    publisher: nature
+    feed_url: https://www.nature.com/nrg.rss
+  - id: nature-reviews-cancer
+    name: Nature Reviews Cancer
+    publisher: nature
+    feed_url: https://www.nature.com/nrc.rss
+  - id: microsystems-nanoengineering
+    name: Microsystems & Nanoengineering
+    publisher: nature
+    feed_url: https://www.nature.com/micronano.rss
+  - id: applied-physics-letters
+    name: Applied Physics Letters
+    publisher: aip
+    feed_url: https://pubs.aip.org/rss/site_1000017/1000011.xml
+  - id: ieee-transactions-ultrasonics
+    name: IEEE Transactions on Ultrasonics
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC11073821.XML
+  - id: ieee-transactions-mtt
+    name: IEEE Transactions on Microwave Theory and Techniques
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC22.XML
+  - id: ieee-microwave-wireless-technology-letters
+    name: IEEE Microwave and Wireless Technology Letters
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC9944983.XML
+  - id: ieee-transactions-electron-devices
+    name: IEEE Transactions on Electron Devices
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC16.XML
+  - id: ieee-electron-device-letters
+    name: IEEE Electron Device Letters
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC55.XML
+  - id: journal-microelectromechanical-systems
+    name: Journal of Microelectromechanical Systems
+    publisher: ieee
+    feed_url: https://ieeexplore.ieee.org/rss/TOC84.XML
+  - id: advanced-materials
+    name: Advanced Materials
+    publisher: wiley
+    feed_url: "https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&feed=rss&jc=15214095"
+  - id: advanced-functional-materials
+    name: Advanced Functional Materials
+    publisher: wiley
+    feed_url: "https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&feed=rss&jc=16163028"
