@@ -23,7 +23,7 @@ _TRANSIENT_ERRORS = (
 
 
 class PoliteClient(httpx.Client):
-    """A synchronous HTTP client that reserves per-origin request slots."""
+    """A synchronous HTTP client that paces actual transport dispatches by origin."""
 
     def __init__(
         self,
@@ -32,31 +32,70 @@ class PoliteClient(httpx.Client):
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
         event_hooks: Mapping[str, list[Callable[..., Any]]] | None = None,
+        _pacer: "_OriginPacer | None" = None,
         **kwargs: Any,
+    ) -> None:
+        self._pacer = _pacer or _OriginPacer(
+            min_interval=min_interval,
+            clock=clock,
+            sleeper=sleeper,
+        )
+        super().__init__(event_hooks=event_hooks, **kwargs)
+
+    def _send_single_request(self, request: httpx.Request) -> httpx.Response:
+        send = super()._send_single_request
+        return self._pacer.dispatch(request, lambda: send(request))
+
+    def _paper_radar_clone_with_transport(self, transport: httpx.BaseTransport) -> "PoliteClient":
+        """Clone client defaults while sharing the transport-boundary origin pacer."""
+
+        return PoliteClient(
+            transport=transport,
+            auth=self._auth,
+            headers=self.headers,
+            params=self.params,
+            cookies=self.cookies,
+            event_hooks=self._event_hooks,
+            default_encoding=self._default_encoding,
+            _pacer=self._pacer,
+        )
+
+
+class _OriginPacer:
+    def __init__(
+        self,
+        *,
+        min_interval: float,
+        clock: Callable[[], float],
+        sleeper: Callable[[float], None],
     ) -> None:
         self._min_interval = _nonnegative_finite(min_interval, "minimum interval")
         if not callable(clock):
             raise TypeError("clock must be callable")
         if not callable(sleeper):
             raise TypeError("sleeper must be callable")
-        self._pacing_clock = clock
-        self._pacing_sleeper = sleeper
-        self._pacing_lock = Lock()
-        self._next_slot_by_origin: dict[tuple[str, str, int | None], float] = {}
+        self._clock = clock
+        self._sleeper = sleeper
+        self._registry_lock = Lock()
+        self._gates: dict[tuple[str, str, int | None], Lock] = {}
+        self._next_dispatch_by_origin: dict[tuple[str, str, int | None], float] = {}
 
-        copied_hooks = {name: list(callbacks) for name, callbacks in (event_hooks or {}).items()}
-        copied_hooks["request"] = [*copied_hooks.get("request", []), self._pace_request]
-        super().__init__(event_hooks=copied_hooks, **kwargs)
-
-    def _pace_request(self, request: httpx.Request) -> None:
+    def dispatch(
+        self,
+        request: httpx.Request,
+        operation: Callable[[], _T],
+    ) -> _T:
         origin = _origin(request.url)
-        with self._pacing_lock:
-            now = _finite_clock_value(self._pacing_clock())
-            reserved_at = max(now, self._next_slot_by_origin.get(origin, now))
-            self._next_slot_by_origin[origin] = reserved_at + self._min_interval
-            delay = reserved_at - now
-        if delay > 0:
-            self._pacing_sleeper(delay)
+        with self._registry_lock:
+            gate = self._gates.setdefault(origin, Lock())
+        with gate:
+            now = _finite_clock_value(self._clock())
+            dispatch_at = max(now, self._next_dispatch_by_origin.get(origin, now))
+            delay = dispatch_at - now
+            if delay > 0:
+                self._sleeper(delay)
+            self._next_dispatch_by_origin[origin] = dispatch_at + self._min_interval
+            return operation()
 
 
 def retry_operation(

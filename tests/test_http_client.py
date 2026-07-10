@@ -119,10 +119,112 @@ def test_polite_client_preserves_caller_request_and_response_hooks() -> None:
         "response": [lambda response: events.append(f"response:{response.status_code}")],
     }
     with PoliteClient(transport=_transport(), min_interval=0, event_hooks=hooks) as client:
+        assert client._event_hooks["request"] == hooks["request"]  # type: ignore[attr-defined]
         client.get("https://example.test/feed")
 
     assert events == ["request:example.test", "response:200"]
     assert len(hooks["request"]) == 1
+
+
+def test_transport_boundary_pacing_prevents_preempted_request_zero_gap() -> None:
+    a_at_boundary = Event()
+    release_a = Event()
+    b_arrived = Event()
+    arrivals: list[tuple[str, float]] = []
+
+    class BoundaryBlockingClient(PoliteClient):
+        def _send_single_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/a":
+                a_at_boundary.set()
+                if not release_a.wait(2):
+                    raise TimeoutError("test did not release /a at transport boundary")
+            return super()._send_single_request(request)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        arrivals.append((request.url.path, monotonic()))
+        if request.url.path == "/b":
+            b_arrived.set()
+        return httpx.Response(200, request=request)
+
+    with BoundaryBlockingClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=0.05,
+    ) as client:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            a_future = executor.submit(client.get, "https://same.test/a")
+            assert a_at_boundary.wait(1)
+            b_future = executor.submit(client.get, "https://same.test/b")
+            try:
+                assert b_arrived.wait(1)
+            finally:
+                release_a.set()
+            b_future.result(timeout=1)
+            a_future.result(timeout=1)
+
+    assert [path for path, _ in arrivals] == ["/b", "/a"]
+    assert arrivals[1][1] - arrivals[0][1] >= 0.04
+
+
+def test_same_origin_gate_is_held_until_response_headers_return() -> None:
+    a_arrived = Event()
+    release_a = Event()
+    b_arrived = Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/a":
+            a_arrived.set()
+            if not release_a.wait(2):
+                raise TimeoutError("test did not release /a transport")
+        else:
+            b_arrived.set()
+        return httpx.Response(200, request=request)
+
+    with PoliteClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=0,
+    ) as client:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            a_future = executor.submit(client.get, "https://same.test/a")
+            assert a_arrived.wait(1)
+            b_future = executor.submit(client.get, "https://same.test/b")
+            try:
+                assert not b_arrived.wait(0.05)
+            finally:
+                release_a.set()
+            a_future.result(timeout=1)
+            b_future.result(timeout=1)
+
+    assert b_arrived.is_set()
+
+
+def test_different_origin_transport_dispatches_remain_concurrent() -> None:
+    a_arrived = Event()
+    release_a = Event()
+    b_arrived = Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "one.test":
+            a_arrived.set()
+            if not release_a.wait(2):
+                raise TimeoutError("test did not release first origin")
+        else:
+            b_arrived.set()
+        return httpx.Response(200, request=request)
+
+    with PoliteClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=1,
+    ) as client:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            a_future = executor.submit(client.get, "https://one.test/a")
+            assert a_arrived.wait(1)
+            b_future = executor.submit(client.get, "https://two.test/b")
+            try:
+                assert b_arrived.wait(1)
+            finally:
+                release_a.set()
+            a_future.result(timeout=1)
+            b_future.result(timeout=1)
 
 
 def test_polite_client_paces_origin_after_caller_hook_mutates_url() -> None:
@@ -198,15 +300,70 @@ def test_feed_owned_direct_client_clone_retains_shared_pacing_hook() -> None:
     ) as client:
         owned = _owned_direct_client(client, httpx.URL("https://example.test/feed"))
         assert owned is not None
+        assert isinstance(owned, PoliteClient)
+        client._transport.close()  # type: ignore[attr-defined]
         owned._transport.close()  # type: ignore[attr-defined]
+        client._transport = _transport()  # type: ignore[attr-defined]
         owned._transport = _transport()  # type: ignore[attr-defined]
         try:
-            owned.get("https://one.test/first")
+            client.get("https://one.test/first")
             owned.get("https://two.test/second")
         finally:
             owned.close()
 
     assert sleeps == [pytest.approx(0.4)]
+
+
+def test_separate_feed_owned_clones_share_pacing_across_retry_attempts() -> None:
+    ticks = iter((0.0, 0.1, 0.2))
+    sleeps: list[float] = []
+
+    with PoliteClient(
+        min_interval=0.5,
+        clock=lambda: next(ticks),
+        sleeper=sleeps.append,
+    ) as client:
+        first = _owned_direct_client(client, httpx.URL("https://same.test/feed"))
+        second = _owned_direct_client(client, httpx.URL("https://same.test/feed"))
+        assert isinstance(first, PoliteClient)
+        assert isinstance(second, PoliteClient)
+        first._transport.close()  # type: ignore[attr-defined]
+        second._transport.close()  # type: ignore[attr-defined]
+        first._transport = _transport()  # type: ignore[attr-defined]
+        second._transport = _transport()  # type: ignore[attr-defined]
+        try:
+            client._transport.close()  # type: ignore[attr-defined]
+            client._transport = _transport()  # type: ignore[attr-defined]
+            client.get("https://same.test/original")
+            first.get("https://same.test/retry-one")
+            second.get("https://same.test/retry-two")
+        finally:
+            first.close()
+            second.close()
+
+    assert sleeps == [pytest.approx(0.4), pytest.approx(0.8)]
+
+
+def test_transport_error_releases_same_origin_gate() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, request=request)
+
+    with PoliteClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=0,
+    ) as client:
+        with pytest.raises(httpx.ConnectError):
+            client.get("https://same.test/first")
+        response = client.get("https://same.test/second")
+
+    assert response.status_code == 200
+    assert attempts == 2
 
 
 def test_retry_operation_uses_deterministic_exponential_backoff() -> None:

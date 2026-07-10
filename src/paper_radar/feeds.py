@@ -349,6 +349,9 @@ def _owned_direct_client(client: httpx.Client, url: httpx.URL) -> httpx.Client |
         retries=pool._retries,
         socket_options=pool._socket_options,
     )
+    clone_factory = getattr(client, "_paper_radar_clone_with_transport", None)
+    if callable(clone_factory):
+        return clone_factory(transport)
     return httpx.Client(
         transport=transport,
         auth=client._auth,  # type: ignore[attr-defined]
