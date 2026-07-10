@@ -184,25 +184,33 @@ def fetch_feed(
     if current_url.scheme != "https":
         raise FeedFetchError(f"initial feed URL must use HTTPS: {current_url}")
     redirect_count = 0
+    redirect_request: httpx.Request | None = None
     while True:
         timeout_extensions = _request_timeout_extensions(started_at, current_url)
         owned_client = _owned_direct_client(client, current_url)
         request_client = owned_client or client
-        request = request_client.build_request(
-            "GET",
-            current_url,
-            headers=headers,
-            extensions={"timeout": timeout_extensions},
-        )
+        if redirect_request is None:
+            request = request_client.build_request(
+                "GET",
+                current_url,
+                headers=headers,
+                extensions={"timeout": timeout_extensions},
+            )
+            apply_default_auth = True
+        else:
+            request = redirect_request
+            request.extensions["timeout"] = timeout_extensions
+            apply_default_auth = False
         try:
             response = _send_request_with_deadline(
                 request_client,
                 request,
                 started_at,
                 abort_transport=owned_client is not None,
+                apply_default_auth=apply_default_auth,
             )
         except BaseException:
-            _release_owned_client(client, owned_client)
+            _release_owned_client(owned_client)
             raise
         try:
             if response.status_code in _REDIRECT_STATUS_CODES:
@@ -215,9 +223,12 @@ def fetch_feed(
                     raise FeedFetchError(
                         f"redirect limit exceeded after {MAX_REDIRECTS} redirects: {response.url}"
                     )
-                next_url = response.url.join(location)
-                _require_https_redirect_target(next_url)
-                current_url = next_url
+                redirect_request = request_client._build_redirect_request(  # type: ignore[attr-defined]
+                    response.request,
+                    response,
+                )
+                _require_https_redirect_target(redirect_request.url)
+                current_url = redirect_request.url
                 redirect_count += 1
                 continue
 
@@ -250,8 +261,9 @@ def fetch_feed(
                 effective_url=str(response.url),
             )
         finally:
+            client.cookies.extract_cookies(response)
             response.close()
-            _release_owned_client(client, owned_client)
+            _release_owned_client(owned_client)
 
 
 def _send_request_with_deadline(
@@ -260,6 +272,7 @@ def _send_request_with_deadline(
     started_at: float,
     *,
     abort_transport: bool = True,
+    apply_default_auth: bool = True,
 ) -> httpx.Response:
     results: Queue[httpx.Response | BaseException] = Queue(maxsize=1)
     remaining = _remaining_fetch_seconds(started_at, request.url)
@@ -267,7 +280,13 @@ def _send_request_with_deadline(
 
     def send() -> None:
         try:
-            response = client.send(request, stream=True, follow_redirects=False)
+            send_auth = httpx.USE_CLIENT_DEFAULT if apply_default_auth else None
+            response = client.send(
+                request,
+                stream=True,
+                auth=send_auth,
+                follow_redirects=False,
+            )
         except BaseException as exc:
             results.put(exc)
         else:
@@ -339,16 +358,16 @@ def _owned_direct_client(client: httpx.Client, url: httpx.URL) -> httpx.Client |
         transport=transport,
         auth=client._auth,  # type: ignore[attr-defined]
         headers=client.headers,
+        params=client.params,
         cookies=client.cookies,
         event_hooks=client._event_hooks,  # type: ignore[attr-defined]
         default_encoding=client._default_encoding,  # type: ignore[attr-defined]
     )
 
 
-def _release_owned_client(caller: httpx.Client, owned: httpx.Client | None) -> None:
+def _release_owned_client(owned: httpx.Client | None) -> None:
     if owned is None:
         return
-    caller.cookies.update(owned.cookies)
     owned.close()
 
 

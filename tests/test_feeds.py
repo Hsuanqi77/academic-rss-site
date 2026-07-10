@@ -747,6 +747,157 @@ def test_fetch_feed_closes_oversized_redirect_response_without_consuming_body(
     assert redirect_stream.closed is True
 
 
+@pytest.mark.parametrize(
+    ("auth", "authorization"),
+    [
+        (httpx.BasicAuth("reader", "secret"), None),
+        (None, "Bearer static-token"),
+    ],
+)
+def test_cross_origin_redirect_sanitizes_credentials_host_cookies_and_params(
+    auth,
+    authorization: str | None,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                302,
+                headers={"Location": "https://destination.example/final?from=location"},
+            )
+        return httpx.Response(200, content=b"<rss />")
+
+    headers = {
+        "Cookie": "static-cookie=must-not-leak",
+        "Host": "origin.example",
+    }
+    if authorization is not None:
+        headers["Authorization"] = authorization
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        auth=auth,
+        headers=headers,
+        params={"client_param": "initial-only"},
+    )
+    client.cookies.set("origin-cookie", "origin", domain="origin.example", path="/")
+    client.cookies.set(
+        "destination-cookie",
+        "destination",
+        domain="destination.example",
+        path="/",
+    )
+    feed = FeedConfig(
+        id="origin",
+        name="Origin Feed",
+        publisher="nature",
+        feed_url="https://origin.example/feed.xml",
+    )
+    try:
+        result = fetch_feed(client, feed)
+    finally:
+        client.close()
+
+    assert result.content == b"<rss />"
+    assert requests[0].url.query == b"client_param=initial-only"
+    assert requests[0].headers["Cookie"] == "static-cookie=must-not-leak"
+    assert requests[0].headers["Host"] == "origin.example"
+    assert "Authorization" in requests[0].headers
+    assert requests[1].url == httpx.URL(
+        "https://destination.example/final?from=location"
+    )
+    assert "Authorization" not in requests[1].headers
+    assert requests[1].headers["Host"] == "destination.example"
+    assert "static-cookie" not in requests[1].headers.get("Cookie", "")
+    assert "origin-cookie" not in requests[1].headers.get("Cookie", "")
+    assert "destination-cookie=destination" in requests[1].headers["Cookie"]
+
+
+def test_same_origin_redirect_preserves_auth_and_jar_cookie_without_reapplying_params() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(302, headers={"Location": "/final?from=location"})
+        return httpx.Response(200, content=b"<rss />")
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        auth=httpx.BasicAuth("reader", "secret"),
+        headers={"Cookie": "static-cookie=initial-only"},
+        params={"client_param": "initial-only"},
+    )
+    client.cookies.set("session", "same-origin", domain="example.org", path="/")
+    try:
+        result = fetch_feed(
+            client,
+            make_feed(),
+            etag='"prior"',
+            last_modified="Thu, 02 Jul 2026 08:00:00 GMT",
+        )
+    finally:
+        client.close()
+
+    assert result.content == b"<rss />"
+    assert requests[0].url.query == b"client_param=initial-only"
+    assert requests[0].headers["Authorization"].startswith("Basic ")
+    assert requests[1].url == httpx.URL("https://example.org/final?from=location")
+    assert requests[1].headers["Authorization"] == requests[0].headers["Authorization"]
+    assert requests[1].headers["Host"] == "example.org"
+    assert "session=same-origin" in requests[1].headers["Cookie"]
+    assert "static-cookie" not in requests[1].headers["Cookie"]
+    assert requests[1].headers["If-None-Match"] == '"prior"'
+    assert requests[1].headers["If-Modified-Since"] == "Thu, 02 Jul 2026 08:00:00 GMT"
+
+
+def test_owned_client_applies_default_params_only_to_initial_request() -> None:
+    with respx.mock:
+        initial_route = respx.get(
+            "https://example.org/feed.xml",
+            params={"client_param": "initial-only"},
+        ).mock(
+            return_value=httpx.Response(
+                302,
+                headers={"Location": "/final?from=location"},
+            )
+        )
+        final_route = respx.get("https://example.org/final?from=location").mock(
+            return_value=httpx.Response(200, content=b"<rss />")
+        )
+        with httpx.Client(
+            trust_env=False,
+            params={"client_param": "initial-only"},
+        ) as client:
+            result = fetch_feed(client, make_feed())
+
+    assert result.content == b"<rss />"
+    assert initial_route.called is True
+    assert final_route.called is True
+
+
+def test_owned_response_cookie_deletion_and_addition_sync_to_caller() -> None:
+    with respx.mock:
+        respx.get("https://example.org/feed.xml").mock(
+            return_value=httpx.Response(
+                200,
+                content=b"<rss />",
+                headers=[
+                    ("Set-Cookie", "session=; Max-Age=0; Path=/"),
+                    ("Set-Cookie", "added=new-value; Path=/"),
+                ],
+            )
+        )
+        with httpx.Client(trust_env=False) as client:
+            client.cookies.set("session", "old-value", domain="example.org", path="/")
+            result = fetch_feed(client, make_feed())
+
+            assert result.content == b"<rss />"
+            assert client.cookies.get("session", domain="example.org", path="/") is None
+            assert client.cookies.get("added", domain="example.org", path="/") == "new-value"
+
+
 def test_fetch_feed_propagates_http_status_errors_with_request_context() -> None:
     with respx.mock:
         respx.get("https://example.org/feed.xml").mock(return_value=httpx.Response(503))
