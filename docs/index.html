@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="个人多出版社科研论文追踪与筛选工具">
+  <meta name="theme-color" content="#f2eee4">
+  <title>Paper Radar · 科研文献雷达</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="sql-wasm.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳至论文列表</a>
+
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="Paper Radar 首页">
+      <span class="brand-mark" aria-hidden="true">PR</span>
+      <span><strong>Paper Radar</strong><small>科研文献雷达</small></span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="#papers">最新论文</a>
+      <a href="#data-status">数据状态</a>
+      <a href="#about">关于</a>
+    </nav>
+    <button id="open-filters" class="filter-toggle" type="button" aria-controls="filters" aria-expanded="false">
+      <span aria-hidden="true">☷</span> 筛选 <span id="active-filter-count" class="badge" aria-label="已启用筛选数">0</span>
+    </button>
+  </header>
+
+  <button id="filter-overlay" class="overlay" type="button" aria-label="关闭筛选面板" tabindex="-1" hidden></button>
+
+  <main id="main-content" class="layout" tabindex="-1">
+    <aside id="filters" class="filters" aria-label="论文筛选">
+      <div class="filters-heading">
+        <div><p class="eyebrow">REFINE / 01</p><h2>筛选</h2></div>
+        <button id="close-filters" class="icon-button" type="button" aria-label="关闭筛选面板">关闭</button>
+      </div>
+
+      <div class="filter-group">
+        <p class="filter-index" aria-hidden="true">01 — 时间范围</p>
+        <label for="date-from">起始日期</label><input id="date-from" type="date">
+        <label for="date-to">结束日期</label><input id="date-to" type="date">
+      </div>
+      <div class="filter-group">
+        <p class="filter-index" aria-hidden="true">02 — 来源</p>
+        <label for="journal">期刊</label><select id="journal"><option value="">全部期刊</option></select>
+        <label for="publisher">出版社</label><select id="publisher"><option value="">全部出版社</option></select>
+      </div>
+      <div class="filter-group">
+        <p class="filter-index" aria-hidden="true">03 — 属性</p>
+        <label for="article-type">文章类型</label><select id="article-type"><option value="">全部类型</option></select>
+        <label for="oa-status">开放获取</label>
+        <select id="oa-status">
+          <option value="">全部状态</option><option value="open">开放</option><option value="closed">非开放</option><option value="unknown">未知</option>
+        </select>
+      </div>
+      <fieldset class="filter-group">
+        <legend><span aria-hidden="true">04 — </span>主题标签</legend>
+        <div id="tag-options" class="tag-options"><p class="empty-note">数据库加载后显示标签</p></div>
+      </fieldset>
+      <button id="clear-filters" class="secondary" type="button">清除全部筛选</button>
+    </aside>
+
+    <section id="papers" class="results" aria-labelledby="results-title">
+      <div class="section-heading">
+        <div><p class="eyebrow">LIVE INDEX / 2026</p><h1 id="results-title">最新论文</h1></div>
+        <p class="edition">多出版社聚合<br><span>个人研究视窗</span></p>
+      </div>
+      <div class="search-row">
+        <label class="search-label" for="search">搜索标题、摘要或 DOI</label>
+        <div class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" autocomplete="off" placeholder="例如：AlScN、BAW、ultrasound"></div>
+        <label class="visually-hidden" for="sort">排序方式</label>
+        <select id="sort"><option value="latest">最新优先</option><option value="oldest">最早优先</option></select>
+      </div>
+
+      <div id="status" class="status" role="status" aria-live="polite">
+        <span class="status-light" aria-hidden="true"></span><span>正在准备论文数据库…</span>
+      </div>
+      <div class="result-summary"><span>检索结果</span><strong id="result-count">0</strong><span>篇论文</span></div>
+      <div id="article-list" class="article-list" aria-busy="true">
+        <article class="article-card skeleton-card" aria-hidden="true"><span></span><span></span><span></span></article>
+        <article class="article-card skeleton-card" aria-hidden="true"><span></span><span></span><span></span></article>
+        <article class="article-card skeleton-card" aria-hidden="true"><span></span><span></span><span></span></article>
+      </div>
+      <nav id="pagination" class="pagination" aria-label="结果分页"></nav>
+    </section>
+  </main>
+
+  <section id="data-status" class="info-section" aria-labelledby="data-title">
+    <p class="eyebrow">SYSTEM / 02</p><h2 id="data-title">数据状态</h2>
+    <p id="database-summary">数据库尚未加载。更新完成后将在此显示采集时间与来源状态。</p>
+  </section>
+  <section id="about" class="info-section" aria-labelledby="about-title">
+    <p class="eyebrow">NOTES / 03</p><h2 id="about-title">关于</h2>
+    <p>本站聚合公开的期刊 RSS 元数据，用于个人科研信息追踪。文章版权归原出版商所有。</p>
+  </section>
+  <footer><span>Paper Radar</span><span>PUBLICATION METADATA INSTRUMENT</span></footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
