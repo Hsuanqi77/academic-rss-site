@@ -94,6 +94,8 @@ class _OriginPacer:
             delay = dispatch_at - now
             if delay > 0:
                 self._sleeper(delay)
+                actual_after_sleep = _finite_clock_value(self._clock())
+                dispatch_at = max(dispatch_at, actual_after_sleep)
             self._next_dispatch_by_origin[origin] = dispatch_at + self._min_interval
             return operation()
 

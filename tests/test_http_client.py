@@ -20,7 +20,7 @@ def _transport() -> httpx.MockTransport:
 
 
 def test_polite_client_waits_for_reserved_same_origin_slot() -> None:
-    ticks = iter((0.0, 0.1))
+    ticks = iter((0.0, 0.1, 0.5))
     sleeps: list[float] = []
     with PoliteClient(
         transport=_transport(),
@@ -32,6 +32,39 @@ def test_polite_client_waits_for_reserved_same_origin_slot() -> None:
         client.get("https://example.test/second")
 
     assert sleeps == [pytest.approx(0.4)]
+
+
+def test_polite_client_rebases_next_slot_after_sleep_overshoot() -> None:
+    now = {"value": 0.0}
+    sleep_calls = 0
+    arrivals: list[float] = []
+
+    def sleeper(delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            now["value"] = 1.5
+        else:
+            now["value"] += delay
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        arrivals.append(now["value"])
+        return httpx.Response(200, request=request)
+
+    with PoliteClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=0.5,
+        clock=lambda: now["value"],
+        sleeper=sleeper,
+    ) as client:
+        client.get("https://same.test/first")
+        now["value"] = 0.1
+        client.get("https://same.test/second")
+        now["value"] = 1.6
+        client.get("https://same.test/third")
+
+    assert arrivals == [0.0, 1.5, 2.0]
+    assert [later - earlier for earlier, later in zip(arrivals, arrivals[1:])] == [1.5, 0.5]
 
 
 def test_polite_client_does_not_delay_different_origins() -> None:
@@ -50,7 +83,7 @@ def test_polite_client_does_not_delay_different_origins() -> None:
 
 
 def test_polite_client_normalizes_host_case_and_effective_default_port() -> None:
-    ticks = iter((0.0, 0.1))
+    ticks = iter((0.0, 0.1, 0.5))
     sleeps: list[float] = []
     with PoliteClient(
         transport=_transport(),
@@ -65,7 +98,7 @@ def test_polite_client_normalizes_host_case_and_effective_default_port() -> None
 
 
 def test_polite_client_paces_stream_and_send_requests() -> None:
-    ticks = iter((0.0, 0.1))
+    ticks = iter((0.0, 0.1, 0.5))
     sleeps: list[float] = []
     with PoliteClient(
         transport=_transport(),
@@ -228,7 +261,7 @@ def test_different_origin_transport_dispatches_remain_concurrent() -> None:
 
 
 def test_polite_client_paces_origin_after_caller_hook_mutates_url() -> None:
-    ticks = iter((0.0, 0.1))
+    ticks = iter((0.0, 0.1, 0.5))
     sleeps: list[float] = []
 
     def share_origin(request: httpx.Request) -> None:
@@ -286,7 +319,7 @@ def test_blocking_caller_hook_cannot_reverse_actual_same_origin_pacing() -> None
 
 
 def test_feed_owned_direct_client_clone_retains_shared_pacing_hook() -> None:
-    ticks = iter((0.0, 0.1))
+    ticks = iter((0.0, 0.1, 0.5))
     sleeps: list[float] = []
 
     def share_origin(request: httpx.Request) -> None:
@@ -315,7 +348,7 @@ def test_feed_owned_direct_client_clone_retains_shared_pacing_hook() -> None:
 
 
 def test_separate_feed_owned_clones_share_pacing_across_retry_attempts() -> None:
-    ticks = iter((0.0, 0.1, 0.2))
+    ticks = iter((0.0, 0.1, 0.5, 0.6, 1.0))
     sleeps: list[float] = []
 
     with PoliteClient(
@@ -341,7 +374,7 @@ def test_separate_feed_owned_clones_share_pacing_across_retry_attempts() -> None
             first.close()
             second.close()
 
-    assert sleeps == [pytest.approx(0.4), pytest.approx(0.8)]
+    assert sleeps == [pytest.approx(0.4), pytest.approx(0.4)]
 
 
 def test_transport_error_releases_same_origin_gate() -> None:
