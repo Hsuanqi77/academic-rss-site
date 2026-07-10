@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event
+from time import monotonic
 
 import httpx
 import pytest
@@ -123,21 +125,84 @@ def test_polite_client_preserves_caller_request_and_response_hooks() -> None:
     assert len(hooks["request"]) == 1
 
 
+def test_polite_client_paces_origin_after_caller_hook_mutates_url() -> None:
+    ticks = iter((0.0, 0.1))
+    sleeps: list[float] = []
+
+    def share_origin(request: httpx.Request) -> None:
+        request.url = request.url.copy_with(host="shared.test")
+
+    with PoliteClient(
+        transport=_transport(),
+        min_interval=0.5,
+        clock=lambda: next(ticks),
+        sleeper=sleeps.append,
+        event_hooks={"request": [share_origin]},
+    ) as client:
+        client.get("https://one.test/first")
+        client.get("https://two.test/second")
+
+    assert sleeps == [pytest.approx(0.4)]
+
+
+def test_blocking_caller_hook_cannot_reverse_actual_same_origin_pacing() -> None:
+    a_hook_entered = Event()
+    release_a = Event()
+    b_arrived = Event()
+    arrivals: list[tuple[str, float]] = []
+
+    def blocking_hook(request: httpx.Request) -> None:
+        if request.url.path == "/a":
+            a_hook_entered.set()
+            if not release_a.wait(2):
+                raise TimeoutError("test did not release /a hook")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        arrivals.append((request.url.path, monotonic()))
+        if request.url.path == "/b":
+            b_arrived.set()
+        return httpx.Response(200, request=request)
+
+    with PoliteClient(
+        transport=httpx.MockTransport(handler),
+        min_interval=0.05,
+        event_hooks={"request": [blocking_hook]},
+    ) as client:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            a_future = executor.submit(client.get, "https://same.test/a")
+            assert a_hook_entered.wait(1)
+            b_future = executor.submit(client.get, "https://same.test/b")
+            try:
+                assert b_arrived.wait(1)
+            finally:
+                release_a.set()
+            b_future.result(timeout=1)
+            a_future.result(timeout=1)
+
+    assert [path for path, _ in arrivals] == ["/b", "/a"]
+    assert arrivals[1][1] - arrivals[0][1] >= 0.04
+
+
 def test_feed_owned_direct_client_clone_retains_shared_pacing_hook() -> None:
     ticks = iter((0.0, 0.1))
     sleeps: list[float] = []
+
+    def share_origin(request: httpx.Request) -> None:
+        request.url = request.url.copy_with(host="shared.test")
+
     with PoliteClient(
         min_interval=0.5,
         clock=lambda: next(ticks),
         sleeper=sleeps.append,
+        event_hooks={"request": [share_origin]},
     ) as client:
         owned = _owned_direct_client(client, httpx.URL("https://example.test/feed"))
         assert owned is not None
         owned._transport.close()  # type: ignore[attr-defined]
         owned._transport = _transport()  # type: ignore[attr-defined]
         try:
-            owned.get("https://example.test/first")
-            owned.get("https://example.test/second")
+            owned.get("https://one.test/first")
+            owned.get("https://two.test/second")
         finally:
             owned.close()
 
@@ -190,6 +255,74 @@ def test_retry_operation_respects_retry_after_for_429() -> None:
 
     assert retry_operation(operation, sleeper=sleeps.append) == "done"
     assert sleeps == [2.0]
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_sleep"),
+    [
+        ("0", 0.5),
+        ("9" * 400, 60.0),
+        ("not-a-delay", 0.5),
+        ("-5", 0.5),
+    ],
+)
+def test_retry_operation_bounds_numeric_retry_after_before_float_conversion(
+    retry_after: str, expected_sleep: float
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+    request = httpx.Request("GET", "https://example.test/feed")
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": retry_after},
+        request=request,
+    )
+
+    def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.HTTPStatusError("retry later", request=request, response=response)
+        return "done"
+
+    assert retry_operation(operation, sleeper=sleeps.append) == "done"
+    assert sleeps == [expected_sleep]
+
+
+@pytest.mark.parametrize("status_code", [501, 505])
+def test_retry_operation_does_not_retry_permanent_server_status(status_code: int) -> None:
+    attempts = 0
+    request = httpx.Request("GET", "https://example.test/feed")
+    response = httpx.Response(status_code, request=request)
+
+    def operation() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.HTTPStatusError("permanent server error", request=request, response=response)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        retry_operation(operation, sleeper=lambda _: pytest.fail("unexpected retry"))
+
+    assert attempts == 1
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 503, 504])
+def test_retry_operation_retries_transient_server_status(status_code: int) -> None:
+    attempts = 0
+    request = httpx.Request("GET", "https://example.test/feed")
+    response = httpx.Response(status_code, request=request)
+
+    def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.HTTPStatusError(
+                "temporary server error", request=request, response=response
+            )
+        return "done"
+
+    assert retry_operation(operation, sleeper=lambda _: None) == "done"
+    assert attempts == 2
 
 
 def test_retry_operation_respects_http_date_retry_after_with_cap() -> None:

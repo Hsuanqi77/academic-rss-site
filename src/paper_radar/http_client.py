@@ -2,6 +2,7 @@ import math
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from numbers import Real
 from threading import Lock
@@ -44,7 +45,7 @@ class PoliteClient(httpx.Client):
         self._next_slot_by_origin: dict[tuple[str, str, int | None], float] = {}
 
         copied_hooks = {name: list(callbacks) for name, callbacks in (event_hooks or {}).items()}
-        copied_hooks["request"] = [self._pace_request, *copied_hooks.get("request", [])]
+        copied_hooks["request"] = [*copied_hooks.get("request", []), self._pace_request]
         super().__init__(event_hooks=copied_hooks, **kwargs)
 
     def _pace_request(self, request: httpx.Request) -> None:
@@ -117,7 +118,9 @@ def _finite_clock_value(value: object) -> float:
 
 
 def _retryable_status(status_code: int) -> bool:
-    return status_code in _RETRYABLE_STATUS_CODES or 500 <= status_code <= 599
+    return status_code in _RETRYABLE_STATUS_CODES or (
+        500 <= status_code <= 599 and status_code not in {501, 505}
+    )
 
 
 def _retry_after_seconds(
@@ -129,19 +132,21 @@ def _retry_after_seconds(
     if value is None:
         return None
     value = value.strip()
+    if value.isascii() and value.isdigit():
+        seconds_decimal = Decimal(value)
+        if seconds_decimal >= Decimal(str(cap)):
+            return cap
+        return float(seconds_decimal)
     try:
-        seconds = float(value)
-    except ValueError:
-        try:
-            retry_at = parsedate_to_datetime(value)
-            now = wall_clock()
-            if retry_at.tzinfo is None:
-                retry_at = retry_at.replace(tzinfo=timezone.utc)
-            if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            seconds = (retry_at - now).total_seconds()
-        except (TypeError, ValueError, OverflowError):
-            return None
+        retry_at = parsedate_to_datetime(value)
+        now = wall_clock()
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - now).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
     if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, cap)
