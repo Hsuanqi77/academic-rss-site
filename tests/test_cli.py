@@ -56,33 +56,58 @@ def test_fetch_emits_json_and_returns_zero_only_for_success(
     assert payload["result"]["status"] == "ok"
 
 
-@pytest.mark.parametrize("status", ["partial", "error"])
-def test_fetch_returns_nonzero_for_incomplete_run(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], status: str
+def test_fetch_treats_partial_as_degraded_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
     monkeypatch.setattr(cli, "load_topics", lambda path: [])
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary(status, 0, 0, 0, 1, (), ("bad",)),
+        lambda *args, **kwargs: RunSummary("partial", 1, 0, 0, 1, ("good",), ("bad",)),
+    )
+
+    assert cli.main(["fetch"]) == 0
+    assert json.loads(capsys.readouterr().out)["result"]["status"] == "partial"
+
+
+def test_fetch_returns_nonzero_for_error_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_feeds", lambda path: [])
+    monkeypatch.setattr(cli, "load_topics", lambda path: [])
+    monkeypatch.setattr(
+        cli,
+        "update_database",
+        lambda *args, **kwargs: RunSummary("error", 0, 0, 0, 1, (), ("bad",)),
     )
 
     assert cli.main(["fetch"]) == 1
-    assert json.loads(capsys.readouterr().out)["result"]["status"] == status
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["result"]["status"] == "error"
+    assert payload["publish_allowed"] is False
 
 
-def test_update_orders_fetch_validate_publish(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("status", ["ok", "partial"])
+def test_update_orders_successful_fetch_validate_publish_and_reports_sizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: str,
 ) -> None:
     calls: list[str] = []
+    working = tmp_path / "working.db"
+    published = tmp_path / "published.db"
+    working.write_bytes(b"working")
+    published.write_bytes(b"published")
     monkeypatch.setattr(cli, "load_feeds", lambda path: ["feed"])
     monkeypatch.setattr(cli, "load_topics", lambda path: ["topic"])
     monkeypatch.setattr(
         cli,
         "update_database",
         lambda *args, **kwargs: (
-            calls.append("fetch") or RunSummary("ok", 1, 0, 0, 0, ("feed",), ())
+            calls.append("fetch")
+            or RunSummary(status, 1, 0, 0, int(status == "partial"), ("feed",), ())
         ),
     )
     monkeypatch.setattr(
@@ -96,12 +121,28 @@ def test_update_orders_fetch_validate_publish(
         lambda *args, **kwargs: calls.append("publish") or _report(),
     )
 
-    assert cli.main(["update"]) == 0
+    assert (
+        cli.main(
+            [
+                "update",
+                "--database",
+                str(working),
+                "--published",
+                str(published),
+            ]
+        )
+        == 0
+    )
     assert calls == ["fetch", "validate", "publish"]
-    assert json.loads(capsys.readouterr().out)["command"] == "update"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "update"
+    assert payload["result"]["status"] == status
+    assert payload["working_size_bytes"] == len(b"working")
+    assert payload["published_size_bytes"] == len(b"published")
+    assert payload["publish_allowed"] is True
 
 
-def test_update_does_not_validate_or_publish_after_failed_fetch(
+def test_update_does_not_validate_or_publish_after_error_fetch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
@@ -109,13 +150,15 @@ def test_update_does_not_validate_or_publish_after_failed_fetch(
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary("partial", 0, 0, 0, 1, (), ("bad",)),
+        lambda *args, **kwargs: RunSummary("error", 0, 0, 0, 1, (), ("bad",)),
     )
     monkeypatch.setattr(cli, "validate_database", lambda *args, **kwargs: pytest.fail())
     monkeypatch.setattr(cli, "publish_database", lambda *args, **kwargs: pytest.fail())
 
     assert cli.main(["update"]) == 1
-    assert json.loads(capsys.readouterr().out)["result"]["status"] == "partial"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["result"]["status"] == "error"
+    assert payload["publish_allowed"] is False
 
 
 def test_update_does_not_publish_after_failed_validation(
@@ -138,6 +181,54 @@ def test_update_does_not_publish_after_failed_validation(
     assert cli.main(["update"]) == 1
     error = json.loads(capsys.readouterr().err)
     assert error["error"]["type"] == "ValidationError"
+    assert error["publish_allowed"] is False
+    assert error["command"] == "update"
+    assert error["result"]["status"] == "ok"
+
+
+def test_publish_success_reports_sizes_and_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    working = tmp_path / "working.db"
+    published = tmp_path / "published.db"
+    working.write_bytes(b"working database")
+    published.write_bytes(b"published database")
+    monkeypatch.setattr(cli, "publish_database", lambda *args, **kwargs: _report())
+
+    assert (
+        cli.main(
+            [
+                "publish",
+                "--database",
+                str(working),
+                "--published",
+                str(published),
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["validation"]["schema_version"] == 3
+    assert payload["working_size_bytes"] == len(b"working database")
+    assert payload["published_size_bytes"] == len(b"published database")
+    assert payload["publish_allowed"] is True
+
+
+def test_publish_failure_never_reports_publication_as_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    working = tmp_path / "working.db"
+    working.write_bytes(b"working database")
+    monkeypatch.setattr(
+        cli,
+        "publish_database",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValidationError("unsafe")),
+    )
+
+    assert cli.main(["publish", "--database", str(working)]) == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["publish_allowed"] is False
+    assert payload["error"]["type"] == "ValidationError"
 
 
 def test_configuration_error_is_json_and_nonzero(

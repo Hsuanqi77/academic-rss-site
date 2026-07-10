@@ -87,10 +87,30 @@ def test_empty_database_is_not_publishable(tmp_path: Path) -> None:
         validate_database(database)
 
 
-@pytest.mark.parametrize("status", [None, "running", "partial", "error"])
+@pytest.mark.parametrize("status", [None, "running", "error"])
 def test_latest_run_must_be_a_completed_success(tmp_path: Path, status: str | None) -> None:
     database = tmp_path / "working.db"
     _database(database, run_status=status)
+
+    with pytest.raises(ValidationError, match="latest run"):
+        validate_database(database)
+
+
+def test_completed_partial_run_is_publishable(tmp_path: Path) -> None:
+    database = tmp_path / "working.db"
+    _database(database, run_status="partial")
+
+    assert validate_database(database).article_count == 1
+
+
+def test_unknown_latest_run_status_is_rejected(tmp_path: Path) -> None:
+    database = tmp_path / "working.db"
+    _database(database)
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA ignore_check_constraints = ON")
+    connection.execute("UPDATE runs_log SET status = 'unknown'")
+    connection.commit()
+    connection.close()
 
     with pytest.raises(ValidationError, match="latest run"):
         validate_database(database)
@@ -182,6 +202,17 @@ def test_publish_uses_a_validated_snapshot_and_replaces_atomically(tmp_path: Pat
     assert report.article_count == 2
     assert validate_database(published).article_count == 2
     assert not list(published.parent.glob("*.tmp"))
+
+
+def test_publish_accepts_a_validated_partial_run(tmp_path: Path) -> None:
+    working = tmp_path / "working.db"
+    published = tmp_path / "published.db"
+    _database(working, run_status="partial")
+
+    report = publish_database(working, published)
+
+    assert report.article_count == 1
+    assert validate_database(published).article_count == 1
 
 
 @pytest.mark.parametrize("failure_stage", ["backup", "replace"])

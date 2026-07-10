@@ -9,6 +9,7 @@ from pathlib import Path
 
 EXPECTED_SCHEMA_VERSION = 3
 MINIMUM_PREVIOUS_FRACTION = 0.5
+_PUBLISHABLE_RUN_STATUSES = frozenset({"ok", "partial"})
 _REQUIRED_TABLES = frozenset(
     {
         "journals",
@@ -190,7 +191,11 @@ def _validate_single_database(path: Path) -> ValidationReport:
         ).fetchone()
         if latest_run is None:
             raise ValidationError("latest run is missing")
-        if latest_run[0] != "ok" or not isinstance(latest_run[1], str) or not latest_run[1].strip():
+        if (
+            latest_run[0] not in _PUBLISHABLE_RUN_STATUSES
+            or not isinstance(latest_run[1], str)
+            or not latest_run[1].strip()
+        ):
             raise ValidationError("latest run did not complete successfully")
 
         earliest_date, latest_date = connection.execute(

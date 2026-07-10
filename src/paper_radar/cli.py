@@ -35,12 +35,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    error_context: dict[str, Any] = {"command": args.command}
     try:
         load_dotenv(PROJECT_ROOT / ".env")
         if args.command == "fetch":
             summary = _fetch(args)
-            _emit({"command": "fetch", "result": asdict(summary)})
-            return 0 if summary.status == "ok" else 1
+            payload = {"command": "fetch", "result": asdict(summary)}
+            if summary.status == "error":
+                payload["publish_allowed"] = False
+            _emit(payload)
+            return 1 if summary.status == "error" else 0
 
         if args.command == "validate":
             report = validate_database(args.database, previous_path=args.published)
@@ -48,21 +52,34 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "publish":
+            working_size = _database_size(args.database, label="working")
             report = publish_database(args.database, args.published)
             _emit(
                 {
                     "command": "publish",
                     "result": asdict(report),
+                    "validation": asdict(report),
                     "published": str(args.published),
+                    "working_size_bytes": working_size,
+                    "published_size_bytes": _database_size(args.published, label="published"),
+                    "publish_allowed": True,
                 }
             )
             return 0
 
         summary = _fetch(args)
-        if summary.status != "ok":
-            _emit({"command": "update", "result": asdict(summary)})
+        error_context["result"] = asdict(summary)
+        if summary.status == "error":
+            _emit(
+                {
+                    "command": "update",
+                    "result": asdict(summary),
+                    "publish_allowed": False,
+                }
+            )
             return 1
         validation_report = validate_database(args.database, previous_path=args.published)
+        working_size = _database_size(args.database, label="working")
         published_report = publish_database(args.database, args.published)
         _emit(
             {
@@ -71,14 +88,17 @@ def main(argv: list[str] | None = None) -> int:
                 "validation": asdict(validation_report),
                 "publication": asdict(published_report),
                 "published": str(args.published),
+                "working_size_bytes": working_size,
+                "published_size_bytes": _database_size(args.published, label="published"),
+                "publish_allowed": True,
             }
         )
         return 0
     except (ConfigError, ValidationError) as exc:
-        _emit_error(exc)
+        _emit_error(exc, context=error_context)
         return 1
     except Exception as exc:
-        _emit_error(exc)
+        _emit_error(exc, context=error_context)
         return 1
 
 
@@ -98,13 +118,22 @@ def _emit(payload: dict[str, Any], *, stream: Any = None) -> None:
     )
 
 
-def _emit_error(error: Exception) -> None:
-    _emit(
+def _emit_error(error: Exception, *, context: dict[str, Any] | None = None) -> None:
+    payload = dict(context or {})
+    payload.update(
         {
+            "publish_allowed": False,
             "error": {
                 "type": type(error).__name__,
                 "message": str(error),
-            }
-        },
-        stream=sys.stderr,
+            },
+        }
     )
+    _emit(payload, stream=sys.stderr)
+
+
+def _database_size(path: Path, *, label: str) -> int:
+    try:
+        return path.stat().st_size
+    except OSError as exc:
+        raise ValidationError(f"could not inspect {label} database size {path}: {exc}") from exc
