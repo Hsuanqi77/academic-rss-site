@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns="http://purl.org/rss/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/">
+  <channel rdf:about="https://example.org/rss1.xml">
+    <title>Nature fixture feed</title>
+    <link>https://example.org/</link>
+    <description>RSS 1.0 fixture</description>
+    <items>
+      <rdf:Seq>
+        <rdf:li rdf:resource="https://example.org/nature-paper" />
+      </rdf:Seq>
+    </items>
+  </channel>
+  <item rdf:about="https://example.org/nature-paper">
+    <title>Nature fixture paper</title>
+    <link>https://example.org/nature-paper</link>
+    <dc:date>2026-07-01</dc:date>
+    <dc:creator>Marie Example</dc:creator>
+    <prism:doi>10.1000/nature</prism:doi>
+    <prism:section>Research</prism:section>
+  </item>
+</rdf:RDF>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Wiley fixture feed</title>
+  <id>https://example.org/atom.xml</id>
+  <updated>2026-07-03T09:00:00Z</updated>
+  <entry>
+    <title>Wiley fixture paper</title>
+    <id>https://doi.org/10.1000/wiley</id>
+    <link rel="alternate" href="https://example.org/wiley-paper" />
+    <updated>2026-07-03T09:00:00Z</updated>
+    <summary>Materials fixture abstract.</summary>
+    <author><name>Grace Example</name></author>
+  </entry>
+</feed>
