@@ -1,0 +1,8 @@
+{
+  "name": "paper-radar-web-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:web": "node --test tests/web/*.test.mjs"
+  }
+}
