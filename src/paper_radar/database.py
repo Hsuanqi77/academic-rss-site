@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
+from time import sleep
 
 from paper_radar.config import FeedConfig, TopicConfig
 from paper_radar.models import ArticleRecord
@@ -27,6 +28,8 @@ _ARTICLE_COLUMNS = (
     "metadata_status",
 )
 _METADATA_STATUS_RANK = {"rss_only": 0, "partial": 1, "enriched": 2}
+_WRITE_TRANSACTION_ATTEMPTS = 4
+_WRITE_TRANSACTION_RETRY_DELAY_SECONDS = 0.02
 
 
 class RepositoryConflictError(ValueError):
@@ -35,6 +38,10 @@ class RepositoryConflictError(ValueError):
 
 class RepositoryNotFoundError(LookupError):
     """Raised when a requested persisted object does not exist."""
+
+
+class RepositoryBusyError(TimeoutError):
+    """Raised when a repository write transaction cannot be acquired."""
 
 
 def utc_now() -> str:
@@ -275,10 +282,16 @@ def finish_run(
 
 @contextmanager
 def _atomic(connection: sqlite3.Connection) -> Iterator[None]:
+    """Run a write atomically without committing a caller-owned transaction.
+
+    Owned writes begin IMMEDIATE to serialize identity reads and writes. Callers
+    composing concurrent writes in an outer transaction should also start that
+    outer transaction with BEGIN IMMEDIATE before invoking repository functions.
+    """
     owns_transaction = not connection.in_transaction
     savepoint = f"paper_radar_repository_{next(_SAVEPOINT_IDS)}"
     if owns_transaction:
-        connection.execute("BEGIN")
+        _begin_immediate(connection)
     else:
         connection.execute(f"SAVEPOINT {savepoint}")
 
@@ -296,6 +309,30 @@ def _atomic(connection: sqlite3.Connection) -> Iterator[None]:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
+
+
+def _begin_immediate(connection: sqlite3.Connection) -> None:
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(1, _WRITE_TRANSACTION_ATTEMPTS + 1):
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            return
+        except sqlite3.OperationalError as error:
+            if not _is_sqlite_busy(error):
+                raise
+            last_error = error
+            if attempt < _WRITE_TRANSACTION_ATTEMPTS:
+                sleep(_WRITE_TRANSACTION_RETRY_DELAY_SECONDS * attempt)
+
+    raise RepositoryBusyError(
+        "could not acquire immediate write transaction "
+        f"after {_WRITE_TRANSACTION_ATTEMPTS} attempts"
+    ) from last_error
+
+
+def _is_sqlite_busy(error: sqlite3.OperationalError) -> bool:
+    error_code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(error_code, int) and error_code & 0xFF == sqlite3.SQLITE_BUSY
 
 
 def _row_exists(connection: sqlite3.Connection, table: str, row_id: str) -> bool:
@@ -587,7 +624,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
 
     connection.execute("PRAGMA foreign_keys = ON")
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        _begin_immediate(connection)
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, 1, 2):
             raise RuntimeError(f"unsupported database schema version: {version}")

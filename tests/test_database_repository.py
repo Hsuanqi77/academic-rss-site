@@ -1,15 +1,18 @@
 import json
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 
 import pytest
 
 import paper_radar.database as database_module
 from paper_radar.config import FeedConfig, TopicConfig
 from paper_radar.database import (
+    RepositoryBusyError,
     RepositoryConflictError,
     RepositoryNotFoundError,
     create_run,
@@ -96,6 +99,7 @@ def test_repository_api_is_importable() -> None:
     )
     assert issubclass(RepositoryConflictError, Exception)
     assert issubclass(RepositoryNotFoundError, Exception)
+    assert issubclass(RepositoryBusyError, Exception)
 
 
 def test_utc_now_is_utc_iso_seconds() -> None:
@@ -903,6 +907,80 @@ def test_repository_operation_inside_outer_transaction_does_not_commit_caller_wo
         == 0
     )
     assert connection.execute("SELECT COUNT(*) FROM article_tags").fetchone()[0] == 0
+
+
+def test_owned_write_transaction_begins_immediate(connection: sqlite3.Connection) -> None:
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+    try:
+        create_run(connection)
+    finally:
+        connection.set_trace_callback(None)
+
+    assert "BEGIN IMMEDIATE" in statements
+    assert "BEGIN" not in statements
+
+
+def test_busy_write_acquisition_retries_then_raises_clear_error(tmp_path: Path) -> None:
+    database_path = tmp_path / "busy.sqlite3"
+    holder = database_module.connect_database(database_path)
+    contender = database_module.connect_database(database_path)
+    try:
+        database_module.initialize_database(holder)
+        contender.execute("PRAGMA busy_timeout = 1")
+        holder.execute("BEGIN IMMEDIATE")
+
+        with pytest.raises(RepositoryBusyError, match="immediate write transaction.*attempts"):
+            create_run(contender)
+
+        assert contender.execute("PRAGMA busy_timeout").fetchone()[0] == 1
+        assert contender.in_transaction is False
+    finally:
+        if holder.in_transaction:
+            holder.rollback()
+        contender.close()
+        holder.close()
+
+
+def test_concurrent_same_identity_writers_serialize_without_duplicate(tmp_path: Path) -> None:
+    database_path = tmp_path / "concurrent.sqlite3"
+    first_connection = database_module.connect_database(database_path)
+    database_module.initialize_database(first_connection)
+    register_default_journal(first_connection)
+    record = article()
+    first_connection.execute("BEGIN IMMEDIATE")
+    first_result = upsert_article(first_connection, record)
+    begin_attempted = Event()
+
+    def competing_upsert() -> str:
+        second_connection = database_module.connect_database(database_path)
+        second_connection.set_trace_callback(
+            lambda statement: (
+                begin_attempted.set() if statement.strip().upper() == "BEGIN IMMEDIATE" else None
+            )
+        )
+        try:
+            return upsert_article(second_connection, record)
+        finally:
+            second_connection.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competing_upsert)
+            attempted_immediate = begin_attempted.wait(timeout=2)
+            if not attempted_immediate:
+                first_connection.commit()
+            assert attempted_immediate
+            assert future.done() is False
+            first_connection.commit()
+            second_result = future.result(timeout=10)
+
+        assert (first_result, second_result) == ("inserted", "skipped")
+        assert first_connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    finally:
+        if first_connection.in_transaction:
+            first_connection.rollback()
+        first_connection.close()
 
 
 def test_repository_rolls_back_if_its_own_commit_fails(connection: sqlite3.Connection) -> None:
