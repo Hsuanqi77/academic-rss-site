@@ -30,6 +30,8 @@ _ARTICLE_COLUMNS = (
 _METADATA_STATUS_RANK = {"rss_only": 0, "partial": 1, "enriched": 2}
 _WRITE_TRANSACTION_ATTEMPTS = 4
 _WRITE_TRANSACTION_RETRY_DELAY_SECONDS = 0.02
+_JOURNAL_STATUSES = frozenset({"ok", "not_modified", "partial", "error"})
+_SUCCESSFUL_JOURNAL_STATUSES = frozenset({"ok", "not_modified"})
 
 
 class RepositoryConflictError(ValueError):
@@ -82,33 +84,46 @@ def mark_journal_status(
     etag: str | None = None,
     last_modified: str | None = None,
 ) -> None:
-    if not isinstance(status, str) or not status.strip():
-        raise ValueError("journal status must be a nonblank string")
+    if not isinstance(status, str) or status not in _JOURNAL_STATUSES or status != status.strip():
+        allowed = ", ".join(sorted(_JOURNAL_STATUSES))
+        raise ValueError(f"journal status must be exactly one of: {allowed}")
+    is_success = status in _SUCCESSFUL_JOURNAL_STATUSES
+    if not is_success and (not isinstance(error, str) or not error.strip()):
+        raise ValueError(f"journal {status} status requires a nonblank diagnostic")
 
     timestamp = utc_now()
-    is_error = status == "error"
     with _atomic(connection):
-        if not _row_exists(connection, "journals", feed_id):
+        row = connection.execute(
+            """
+            SELECT etag, last_modified, last_success_at
+            FROM journals WHERE id = ?
+            """,
+            (feed_id,),
+        ).fetchone()
+        if row is None:
             raise RepositoryNotFoundError(f"journal not found: {feed_id}")
+        stored_etag = etag if status == "ok" or etag is not None else row["etag"]
+        stored_last_modified = (
+            last_modified if status == "ok" or last_modified is not None else row["last_modified"]
+        )
         connection.execute(
             """
             UPDATE journals
-            SET etag = COALESCE(?, etag),
-                last_modified = COALESCE(?, last_modified),
+            SET etag = ?,
+                last_modified = ?,
                 last_checked_at = ?,
-                last_success_at = CASE WHEN ? THEN last_success_at ELSE ? END,
+                last_success_at = ?,
                 last_status = ?,
                 last_error = ?
             WHERE id = ?
             """,
             (
-                etag,
-                last_modified,
+                stored_etag,
+                stored_last_modified,
                 timestamp,
-                is_error,
-                timestamp,
+                timestamp if is_success else row["last_success_at"],
                 status,
-                error,
+                None if is_success else error,
                 feed_id,
             ),
         )
@@ -474,6 +489,11 @@ def _merged_article_values(
         loser_is_higher_quality = loser_rank > current_rank
         if merged["doi"] is None and loser["doi"] is not None:
             merged["doi"] = loser["doi"]
+        merged["title"] = _prefer_protected_text(
+            merged["title"],
+            loser["title"],
+            prefer_candidate=loser_is_higher_quality,
+        )
         merged["abstract"] = _prefer_protected_text(
             merged["abstract"],
             loser["abstract"],
@@ -510,7 +530,11 @@ def _merged_article_values(
         {
             "doi": article.doi if article.doi is not None else merged["doi"],
             "journal_id": article.journal_id,
-            "title": article.title,
+            "title": _prefer_protected_text(
+                merged["title"],
+                article.title,
+                prefer_candidate=incoming_is_not_lower_quality,
+            ),
             "abstract": _prefer_protected_text(
                 merged["abstract"],
                 article.abstract,
