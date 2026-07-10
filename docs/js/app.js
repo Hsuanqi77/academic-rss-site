@@ -56,7 +56,9 @@ function setClosedMobile() {
 }
 
 function setDesktop() {
-  const focusNeedsRepair = document.activeElement === closeButton || document.activeElement === overlay;
+  const focusNeedsRepair = drawer.classList.contains("open")
+    || document.activeElement === closeButton
+    || document.activeElement === overlay;
   clearModalState();
   drawer.inert = false;
   drawer.removeAttribute("aria-hidden");
