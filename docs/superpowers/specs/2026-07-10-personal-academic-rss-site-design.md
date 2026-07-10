@@ -1,7 +1,7 @@
 # 个人学术 RSS 聚合网站设计
 
 - 日期：2026-07-10
-- 状态：设计已确认，等待用户复核书面版本
+- 状态：用户已于 2026-07-10 复核并批准
 - 参考项目：`hehuifeng/Nature_task_generate` 与 `hehuifeng/rss_site`
 
 ## 1. 目标
