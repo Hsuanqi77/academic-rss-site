@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from unicodedata import category
 
 from paper_radar.config import TopicConfig
+from paper_radar.matching import normalize_match_separators
 from paper_radar.models import ArticleRecord
 from paper_radar.normalize import clean_text
 
@@ -11,22 +12,35 @@ def classify_article(
     topics: Sequence[TopicConfig],
 ) -> list[TopicConfig]:
     searchable_fields = tuple(
-        cleaned.casefold()
+        normalize_match_separators(cleaned)
         for value in (article.title, article.abstract)
         if (cleaned := clean_text(value)) is not None
     )
-    matches: list[TopicConfig] = []
-    for topic in topics:
-        if any(_keyword_matches(keyword, searchable_fields) for keyword in topic.keywords):
-            matches.append(topic)
-    return matches
+    base_hits = tuple(
+        any(_keyword_matches(keyword, searchable_fields) for keyword in topic.keywords)
+        for topic in topics
+    )
+    base_groups = {
+        topic.group
+        for topic, hit in zip(topics, base_hits, strict=True)
+        if hit and not topic.requires_any_group
+    }
+    return [
+        topic
+        for topic, hit in zip(topics, base_hits, strict=True)
+        if hit
+        and (
+            not topic.requires_any_group
+            or any(group in base_groups for group in topic.requires_any_group)
+        )
+    ]
 
 
 def _keyword_matches(keyword: str, searchable_fields: tuple[str, ...]) -> bool:
     cleaned = clean_text(keyword)
     if cleaned is None:
         return False
-    normalized_keyword = cleaned.casefold()
+    normalized_keyword = normalize_match_separators(cleaned)
     return any(_field_contains_keyword(field, normalized_keyword) for field in searchable_fields)
 
 

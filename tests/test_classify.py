@@ -22,12 +22,18 @@ def _article(*, title: str, abstract: str | None = None) -> ArticleRecord:
     )
 
 
-def _topic(topic_id: str, *keywords: str) -> TopicConfig:
+def _topic(
+    topic_id: str,
+    *keywords: str,
+    group: str = "acoustic-rf",
+    requires_any_group: tuple[str, ...] = (),
+) -> TopicConfig:
     return TopicConfig(
         id=topic_id,
         label=topic_id.upper(),
         keywords=keywords,
-        group="acoustic-rf",
+        group=group,
+        requires_any_group=requires_any_group,
     )
 
 
@@ -60,12 +66,25 @@ def test_classify_unicode_dash_keyword_matches_dash_compound_continuation() -> N
     assert classify_article(_article(title="radio–frequency–response"), [rf]) == [rf]
 
 
-def test_classify_phrase_tolerates_collapsed_whitespace_only() -> None:
+def test_classify_phrase_tolerates_collapsed_whitespace_and_dashes() -> None:
     saw = _topic("saw", "surface acoustic wave")
 
     assert classify_article(_article(title="Surface\n acoustic   wave resonator"), [saw]) == [saw]
-    assert classify_article(_article(title="A surface-acoustic-wave resonator"), [saw]) == []
+    assert classify_article(_article(title="A surface-acoustic-wave resonator"), [saw]) == [saw]
     assert classify_article(_article(title="A subsurface acoustic waveform"), [saw]) == []
+
+
+def test_classify_canonical_phrase_matches_ascii_and_unicode_dashes() -> None:
+    saw = _topic("saw", "surface acoustic wave")
+
+    assert classify_article(_article(title="A surface-acoustic-wave resonator"), [saw]) == [saw]
+    assert classify_article(_article(title="A surface–acoustic—wave resonator"), [saw]) == [saw]
+
+
+def test_classify_hyphenated_keyword_matches_space_separated_text() -> None:
+    rf = _topic("rf", "radio-frequency")
+
+    assert classify_article(_article(title="A radio frequency filter"), [rf]) == [rf]
 
 
 def test_classify_escapes_keyword_metacharacters_and_respects_boundaries() -> None:
@@ -131,3 +150,48 @@ def test_classify_handles_empty_abstract_and_does_not_match_substrings() -> None
 
     assert classify_article(_article(title="Seesaw performance", abstract=None), [saw]) == []
     assert classify_article(_article(title="AlScN film", abstract=""), [material]) == []
+
+
+def test_classify_context_gate_accepts_an_ungated_base_group_hit() -> None:
+    acoustic = _topic("saw", "surface acoustic wave", group="acoustic-rf")
+    characterization = _topic(
+        "xrd",
+        "XRD",
+        group="characterization",
+        requires_any_group=("acoustic-rf", "materials"),
+    )
+
+    article = _article(title="XRD analysis of a surface acoustic wave resonator")
+
+    assert classify_article(article, [characterization, acoustic]) == [characterization, acoustic]
+
+
+def test_classify_context_gate_rejects_hit_without_an_ungated_base_group() -> None:
+    characterization = _topic(
+        "xrd",
+        "XRD",
+        group="characterization",
+        requires_any_group=("acoustic-rf",),
+    )
+
+    assert classify_article(_article(title="XRD analysis"), [characterization]) == []
+
+
+def test_classify_context_gates_cannot_activate_each_other_cyclically() -> None:
+    gated_acoustic = _topic(
+        "saw",
+        "SAW",
+        group="acoustic-rf",
+        requires_any_group=("characterization",),
+    )
+    gated_characterization = _topic(
+        "xrd",
+        "XRD",
+        group="characterization",
+        requires_any_group=("acoustic-rf",),
+    )
+
+    assert classify_article(
+        _article(title="SAW device characterized by XRD"),
+        [gated_acoustic, gated_characterization],
+    ) == []
