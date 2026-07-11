@@ -41,6 +41,10 @@ class _ShellParser(HTMLParser):
         self.links: list[str] = []
         self.scripts: list[str] = []
         self.lang: str | None = None
+        self.id_counts: dict[str, int] = {}
+        self.details_count = 0
+        self.summary_count = 0
+        self.unsafe_external_links: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
@@ -48,6 +52,18 @@ class _ShellParser(HTMLParser):
             self.lang = attributes.get("lang")
         if element_id := attributes.get("id"):
             self.ids.add(element_id)
+            self.id_counts[element_id] = self.id_counts.get(element_id, 0) + 1
+        if tag == "details":
+            self.details_count += 1
+        if tag == "summary":
+            self.summary_count += 1
+        if tag == "a" and (href := attributes.get("href")):
+            if href.startswith(("http://", "https://")) and (
+                attributes.get("target") != "_blank"
+                or set((attributes.get("rel") or "").split())
+                != {"noopener", "noreferrer"}
+            ):
+                self.unsafe_external_links.append(href)
         if tag in {"header", "nav", "main", "aside", "section", "footer"}:
             self.landmarks.add(tag)
         if tag == "link" and attributes.get("href"):
@@ -110,6 +126,31 @@ def test_shell_supports_drawer_accessibility_and_responsive_motion() -> None:
     assert "prefers-reduced-motion" in css
     assert "overflow-x" in css
     assert "focus-visible" in css
+
+
+def test_guide_has_accessible_native_disclosures_and_safe_links() -> None:
+    html = (DOCS / "index.html").read_text(encoding="utf-8")
+    parser = _ShellParser()
+    parser.feed(html)
+
+    assert parser.id_counts.get("guide") == 1
+    assert parser.details_count == 12
+    assert parser.summary_count == 12
+    assert parser.unsafe_external_links == []
+
+
+def test_guide_uses_approved_type_sizes_and_responsive_grid() -> None:
+    css = (DOCS / "styles.css").read_text(encoding="utf-8")
+
+    assert re.search(r"\.guide-group summary\s*\{[^}]*font-size:\s*13px", css, re.S)
+    assert re.search(r"\.guide-tag-name\s*\{[^}]*font-size:\s*12px", css, re.S)
+    assert re.search(r"\.guide-keywords\s*\{[^}]*font:\s*11px/1\.65", css, re.S)
+    assert re.search(
+        r"@media\s*\(max-width:\s*820px\)\s*\{.*?"
+        r"\.guide-grid\s*\{[^}]*grid-template-columns:\s*1fr",
+        css,
+        re.S,
+    )
 
 
 def test_typography_uses_local_noto_sans_sc_without_resizing_exclusions() -> None:

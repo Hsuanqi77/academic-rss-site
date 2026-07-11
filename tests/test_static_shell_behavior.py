@@ -244,25 +244,65 @@ def test_escape_and_overlay_restore_focus_and_exact_background_state(
 ) -> None:
     mobile_page.evaluate(
         """() => {
-          const about = document.querySelector('#about');
-          about.inert = true;
-          about.setAttribute('aria-hidden', 'false');
+          const guide = document.querySelector('#guide');
+          guide.inert = true;
+          guide.setAttribute('aria-hidden', 'false');
         }"""
     )
 
     mobile_page.locator("#open-filters").click()
     mobile_page.keyboard.press("Escape")
     assert mobile_page.evaluate("document.activeElement.id") == "open-filters"
-    assert mobile_page.locator("#about").get_attribute("aria-hidden") == "false"
-    assert mobile_page.locator("#about").evaluate("element => element.inert") is True
+    assert mobile_page.locator("#guide").get_attribute("aria-hidden") == "false"
+    assert mobile_page.locator("#guide").evaluate("element => element.inert") is True
 
     mobile_page.locator("#open-filters").click()
     mobile_page.mouse.click(480, 400)
     assert mobile_page.evaluate("document.activeElement.id") == "open-filters"
     assert mobile_page.locator("#filters").get_attribute("role") is None
     assert mobile_page.locator("#filters").get_attribute("aria-modal") is None
-    assert mobile_page.locator("#about").get_attribute("aria-hidden") == "false"
-    assert mobile_page.locator("#about").evaluate("element => element.inert") is True
+    assert mobile_page.locator("#guide").get_attribute("aria-hidden") == "false"
+    assert mobile_page.locator("#guide").evaluate("element => element.inert") is True
+
+
+def test_guide_disclosures_are_keyboard_operable_and_use_two_columns_on_desktop(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory()
+    first = page.locator("#guide details").first
+    summary = first.locator("summary")
+
+    assert first.get_attribute("open") == ""
+    summary.focus()
+    page.keyboard.press("Enter")
+    assert first.get_attribute("open") is None
+    page.keyboard.press("Enter")
+    assert first.get_attribute("open") == ""
+    assert "Nature Communications" in (page.locator("#guide").text_content() or "")
+    assert "bulk acoustic wave" in (page.locator("#guide").text_content() or "")
+    assert page.locator(".guide-grid").first.evaluate(
+        "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
+    ) == 2
+
+
+def test_guide_stacks_at_390px_without_overflow_and_keeps_approved_sizes(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory(width=390)
+
+    assert page.locator(".guide-group summary").first.evaluate(
+        "element => getComputedStyle(element).fontSize"
+    ) == "13px"
+    assert page.locator(".guide-tag-name").first.evaluate(
+        "element => getComputedStyle(element).fontSize"
+    ) == "12px"
+    assert page.locator(".guide-keywords").first.evaluate(
+        "element => getComputedStyle(element).fontSize"
+    ) == "11px"
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth") is True
+    assert page.locator(".guide-grid").first.evaluate(
+        "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
+    ) == 1
 
 
 def test_desktop_to_closed_mobile_moves_focus_before_inerting_drawer(
