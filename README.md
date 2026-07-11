@@ -44,7 +44,21 @@ UNPAYWALL_EMAIL=your-name@example.com
 
 建议连续运行两轮。第一轮确认四类出版社至少各有一个来源成功；第二轮应以 `skipped` 或 HTTP 未修改为主，并确认没有重复 DOI。
 
-## 3. 本地预览
+## 3. 每日云端自动更新
+
+仓库通过 GitHub Actions 工作流 **Daily RSS Update**，每天北京时间 08:00 自动检查全部已启用 RSS。任务在 GitHub 的云端 runner 中执行，不需要打开 Codex，也不需要保持本地电脑开机或联网。
+
+自动任务从当前 `docs/data/papers.db` 恢复增量工作数据库，沿用手动更新的抓取、校验和发布闸门。有数据变化时，GitHub Actions 机器人只提交 `docs/data/papers.db`；没有变化时不创建空提交。任务最后会显式请求 GitHub Pages 构建。
+
+手动补跑：打开仓库 **Actions → Daily RSS Update → Run workflow**。运行日志和 Job Summary 会显示新增、更新、跳过、失败来源以及是否产生数据库提交。
+
+Unpaywall 邮箱是可选项。如需启用，在仓库 **Settings → Secrets and variables → Actions** 添加名为 `UNPAYWALL_EMAIL` 的 Secret；不要把真实邮箱写进工作流、`.env.example`、其他公开文件或提交历史。未设置时 RSS 和 Crossref 更新仍会运行，无法确认的 OA 状态保持 `unknown`。
+
+公开仓库连续 60 天没有活动时，GitHub 可能自动停用定时工作流。如果自动更新停止，在 Actions 页面重新启用 **Daily RSS Update**，再点击 **Run workflow** 补跑。自动任务失败不会删除或覆盖当前已发布网站；先检查失败步骤，再手动补跑。
+
+如果机器人执行 `git pull --rebase` 时，恰好有人同时修改了二进制 SQLite 数据库而安全失败，请先确认 `main` 已稳定，然后直接重新点击 **Run workflow**。不要使用 force push。
+
+## 4. 本地预览
 
 ```powershell
 .\.venv\Scripts\python.exe -m http.server 8000 --directory docs
@@ -52,7 +66,7 @@ UNPAYWALL_EMAIL=your-name@example.com
 
 浏览器打开 `http://localhost:8000`。不要直接双击 `index.html`，因为 `file://` 页面不能可靠加载 SQLite 和 WASM。页面“数据状态”显示当前发布快照的可检索文章数量；数据时间取决于最近一次手动更新，不是实时全文数据库。
 
-## 4. 运行全部测试
+## 5. 运行全部测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
@@ -68,7 +82,7 @@ node --test tests/web/*.test.mjs
 
 浏览器测试优先使用已安装的 Microsoft Edge，再尝试 Playwright Chromium。正常验收不应跳过浏览器；只有明确设置 `PAPER_RADAR_ALLOW_BROWSER_SKIP=1` 时才允许跳过。
 
-## 5. 添加或修改期刊
+## 6. 添加或修改期刊
 
 编辑 `feeds.yml` 的 `feeds` 列表，每项包含：
 
@@ -80,11 +94,11 @@ node --test tests/web/*.test.mjs
 
 只使用出版商公开 RSS，不用网页抓取代替 RSS，也不绕过登录、订阅或机构访问控制。修改后先运行测试，再执行两轮 `update.ps1` 验收。
 
-## 6. 添加主题标签
+## 7. 添加主题标签
 
 编辑 `topics.yml`，新增唯一 `id`、显示名 `label` 和至少一个 `keywords`。关键词在标题和摘要中进行不区分 ASCII 大小写的匹配。再次更新数据库后，标签自动出现在前端筛选栏。
 
-## 7. 两轮本地验收清单
+## 8. 两轮本地验收清单
 
 第一轮：
 
@@ -100,7 +114,7 @@ node --test tests/web/*.test.mjs
 3. 刷新页面后 URL 中的搜索、期刊、日期、类型、OA 和标签状态可恢复；
 4. 再次运行全部 Python、Node、Ruff 和浏览器测试。
 
-## 8. 手动发布到 GitHub Pages
+## 9. 手动发布到 GitHub Pages
 
 本地验收完成后，由仓库所有者自行执行外部发布：
 
@@ -112,11 +126,11 @@ node --test tests/web/*.test.mjs
 
 不要在确认账户、仓库名称和公开可见性之前自动创建仓库、推送或启用 Pages。本 README 不填写尚不存在的 URL。
 
-## 9. 隐私、版权与访问边界
+## 10. 隐私、版权与访问边界
 
 本站仅保存并展示公开 RSS、Crossref 和可选 Unpaywall 提供的论文元数据，并链接到出版商原文。文章版权归作者和出版商所有。本项目不下载付费全文、不复制受版权保护的正文，也不规避登录、付费墙、验证码或机构授权。公开部署前请检查数据库中没有私人笔记；`.env`、工作数据库、WAL/SHM、备份和测试报告均不应进入 Git。
 
-## 10. 常见故障
+## 11. 常见故障
 
 - **提示虚拟环境不存在**：重新执行第 1 节命令，确认使用项目内 `.venv`。
 - **RSS 返回 403、404、超时或非 XML**：先核对 `failed_feeds`；在出版商官网确认公开 RSS 地址，不要改用网页抓取。
@@ -126,7 +140,7 @@ node --test tests/web/*.test.mjs
 - **浏览器测试找不到浏览器**：安装 Edge，或运行 `.\.venv\Scripts\python.exe -m playwright install chromium`。
 - **搜索百分号或下划线**：它们按普通字符处理，不是 SQL 通配符。
 
-## 11. 目录结构
+## 12. 目录结构
 
 ```text
 feeds.yml                 官方 RSS 来源配置

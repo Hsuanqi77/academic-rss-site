@@ -77,3 +77,21 @@ def test_beginner_commands_and_update_json_paths_are_accurate() -> None:
         "publish_allowed",
     ):
         assert f"`{field}`" in readme
+
+
+def test_readme_documents_daily_cloud_update_and_recovery() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    workflow = ROOT / ".github" / "workflows" / "daily-rss-update.yml"
+
+    assert workflow.is_file()
+    for phrase in (
+        "每天北京时间 08:00",
+        "不需要打开 Codex",
+        "不需要保持本地电脑开机",
+        "Daily RSS Update",
+        "Run workflow",
+        "UNPAYWALL_EMAIL",
+        "连续 60 天",
+        "docs/data/papers.db",
+    ):
+        assert phrase in readme
