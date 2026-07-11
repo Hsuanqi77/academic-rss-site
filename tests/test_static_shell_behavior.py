@@ -136,9 +136,12 @@ def page_factory(
         search: str = "",
         database_status: int = 200,
         database_body: bytes | None = None,
+        init_script: str | None = None,
     ) -> Page:
         page = shell_browser.new_page(viewport={"width": width, "height": 800})
         page.set_default_timeout(5_000)
+        if init_script:
+            page.add_init_script(init_script)
         body = paper_db_bytes if database_body is None else database_body
         page.route(
             "**/data/papers.db*",
@@ -386,3 +389,107 @@ def test_empty_and_database_error_states_are_readable(
     assert "HTTP 503" in (error_page.locator("#status").text_content() or "")
     assert error_page.locator("#article-list").get_attribute("aria-busy") == "false"
     assert "失败" in (error_page.locator("#database-summary").text_content() or "")
+
+
+def test_post_open_failure_closes_database_once_without_masking_original_error(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory(
+        init_script="""
+          window.__closed = 0;
+          window.__PAPER_RADAR_DEPENDENCIES__ = {
+            loadDatabaseFn: async () => ({
+              close() { window.__closed += 1; throw new Error('close failed'); },
+            }),
+            loadFilterOptionsFn: () => { throw new Error('options failed'); },
+            queryArticlesFn: () => { throw new Error('query should not run'); },
+          };
+        """
+    )
+    page.wait_for_function("document.querySelector('#status')?.classList.contains('error')")
+    assert "options failed" in (page.locator("#status").text_content() or "")
+    assert "close failed" not in (page.locator("#status").text_content() or "")
+    assert page.evaluate("window.__closed") == 1
+    page.evaluate(
+        """() => {
+          dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+          dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        }"""
+    )
+    assert page.evaluate("window.__closed") == 1
+
+
+def test_query_busy_ready_announcement_pagination_focus_and_debounce_interlock(
+    app_page: Page,
+) -> None:
+    status = app_page.locator("#status")
+    assert status.is_hidden() is False
+    assert "status-sr-only" in (status.get_attribute("class") or "")
+    assert "26 篇" in (status.text_content() or "")
+    assert "第 1 页" in (status.text_content() or "")
+
+    next_button = app_page.get_by_role("button", name="下一页")
+    next_button.focus()
+    app_page.keyboard.press("Enter")
+    app_page.wait_for_function(
+        "document.querySelector('[aria-current=\"page\"]')?.textContent === '2'"
+    )
+    assert app_page.evaluate("document.activeElement.getAttribute('aria-current')") == "page"
+
+    app_page.evaluate(
+        """() => {
+          window.__busyOldValues = [];
+          window.__countMutations = [];
+          new MutationObserver(records => {
+            window.__busyOldValues.push(...records.map(record => record.oldValue));
+          }).observe(document.querySelector('#article-list'), {
+            attributes: true, attributeFilter: ['aria-busy'], attributeOldValue: true,
+          });
+          new MutationObserver(() => {
+            window.__countMutations.push(document.querySelector('#result-count').textContent);
+          }).observe(document.querySelector('#result-count'), { childList: true, subtree: true });
+        }"""
+    )
+    app_page.locator("#search").fill("Paper 24")
+    app_page.locator("#sort").select_option("oldest")
+    app_page.wait_for_function("document.querySelector('#result-count').textContent === '1'")
+    app_page.wait_for_timeout(300)
+    assert app_page.evaluate("window.__busyOldValues") == ["false", "true"]
+    assert app_page.locator("#article-list").get_attribute("aria-busy") == "false"
+    assert app_page.evaluate("window.__countMutations") == ["1"]
+    assert app_page.evaluate("new URLSearchParams(location.search).get('q')") == "Paper 24"
+
+
+def test_startup_queries_once_and_pagehide_respects_bfcache(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory(
+        init_script="""
+          window.__closed = 0;
+          window.__queries = 0;
+          window.__PAPER_RADAR_DEPENDENCIES__ = {
+            loadDatabaseFn: async () => ({ close() { window.__closed += 1; } }),
+            loadFilterOptionsFn: () => ({
+              journals: [], publishers: [], tags: [], articleTypes: [], oaStatuses: [],
+            }),
+            queryArticlesFn: () => {
+              window.__queries += 1;
+              return { rows: [], total: 7, page: 1, pageSize: 20 };
+            },
+          };
+        """
+    )
+    page.wait_for_function(
+        "document.querySelector('#article-list')?.getAttribute('aria-busy') === 'false'"
+    )
+    assert page.evaluate("window.__queries") == 1
+    assert "7" in (page.locator("#database-summary").text_content() or "")
+    page.evaluate("dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
+    assert page.evaluate("window.__closed") == 0
+    page.evaluate(
+        """() => {
+          dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+          dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        }"""
+    )
+    assert page.evaluate("window.__closed") == 1

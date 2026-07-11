@@ -334,7 +334,8 @@ export function createAppController({
     messageElement.textContent = message;
     elements.status.classList.toggle("error", kind === "error");
     elements.status.classList.toggle("empty", kind === "empty");
-    elements.status.hidden = kind === "ready";
+    elements.status.classList.toggle("status-sr-only", kind === "ready");
+    elements.status.hidden = false;
   }
 
   function populateOptions(loaded) {
@@ -441,17 +442,17 @@ export function createAppController({
     );
   }
 
-  function render() {
+  function render({ focusPagination = false, throwOnError = false } = {}) {
     if (!database) return;
+    elements.articleList.setAttribute("aria-busy", "true");
     try {
       const result = queryArticlesFn(database, state);
       state = { ...state, page: result.page };
       elements.resultCount.textContent = String(result.total);
       elements.articleList.replaceChildren();
-      elements.articleList.setAttribute("aria-busy", "false");
       if (result.rows.length) {
         elements.articleList.append(...result.rows.map((row) => createArticleCard(documentRef, row)));
-        setStatus("ready", "论文列表已更新。");
+        setStatus("ready", `已显示 ${result.total} 篇论文，第 ${result.page} 页。`);
       } else {
         const empty = documentRef.createElement("p");
         empty.className = "empty-state";
@@ -460,25 +461,44 @@ export function createAppController({
         setStatus("empty", "没有匹配的论文。");
       }
       renderPagination(result.total, result.pageSize);
+      if (focusPagination) elements.pagination.querySelector('[aria-current="page"]')?.focus();
       updateFilterCount();
       writeUrl();
+      return result;
     } catch (error) {
-      elements.articleList.setAttribute("aria-busy", "false");
       setStatus("error", `查询失败：${error instanceof Error ? error.message : "未知错误"}`);
+      if (throwOnError) throw error;
+      return null;
+    } finally {
+      elements.articleList.setAttribute("aria-busy", "false");
     }
   }
 
+  function cancelSearchTimer() {
+    if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+
   function updateFromControls() {
+    cancelSearchTimer();
     state = reconcileState(readControls());
     render();
   }
 
   function scheduleSearch() {
-    if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
+    cancelSearchTimer();
     searchTimer = windowRef.setTimeout(() => {
       searchTimer = null;
       updateFromControls();
     }, SEARCH_DEBOUNCE_MS);
+  }
+
+  function scheduleImmediateSearch() {
+    cancelSearchTimer();
+    searchTimer = windowRef.setTimeout(() => {
+      searchTimer = null;
+      updateFromControls();
+    }, 0);
   }
 
   function bind() {
@@ -486,11 +506,7 @@ export function createAppController({
     bound = true;
     const listenerOptions = { signal: abortController.signal };
     elements.search.addEventListener("input", scheduleSearch, listenerOptions);
-    elements.search.addEventListener("change", () => {
-      if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
-      searchTimer = null;
-      updateFromControls();
-    }, listenerOptions);
+    elements.search.addEventListener("change", scheduleImmediateSearch, listenerOptions);
     for (const control of Object.values(controls)) {
       if (control !== elements.search) control.addEventListener("change", updateFromControls, listenerOptions);
     }
@@ -500,8 +516,9 @@ export function createAppController({
       if (!button || button.disabled) return;
       const page = Number(button.dataset.page);
       if (!Number.isSafeInteger(page) || page < 1) return;
-      state = { ...state, page };
-      render();
+      cancelSearchTimer();
+      state = { ...reconcileState(readControls()), page };
+      render({ focusPagination: true });
       windowRef.scrollTo({
         top: 0,
         behavior: windowRef.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -509,19 +526,27 @@ export function createAppController({
       });
     }, listenerOptions);
     elements.clearFilters.addEventListener("click", () => {
-      if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
-      searchTimer = null;
+      cancelSearchTimer();
       state = { ...DEFAULT_STATE, tags: [] };
       syncControls();
       render();
     }, listenerOptions);
     windowRef.addEventListener("popstate", () => {
-      if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
-      searchTimer = null;
+      cancelSearchTimer();
       state = reconcileState(parseState(windowRef.location.search));
       syncControls();
       render();
     }, listenerOptions);
+  }
+
+  function closeDatabaseQuietly() {
+    const opened = database;
+    database = null;
+    try {
+      opened?.close?.();
+    } catch {
+      // Cleanup must not replace the loading/query error shown to the user.
+    }
   }
 
   async function startOnce() {
@@ -539,11 +564,11 @@ export function createAppController({
       state = reconcileState(state);
       syncControls();
       bind();
-      const complete = queryArticlesFn(database, { ...DEFAULT_STATE, tags: [] });
-      elements.databaseSummary.textContent = `数据库已加载，共 ${complete.total} 篇可检索论文。`;
-      render();
+      const result = render({ throwOnError: true });
+      elements.databaseSummary.textContent = `数据库已加载，当前视图共 ${result.total} 篇论文。`;
     } catch (error) {
       if (destroyed) return;
+      closeDatabaseQuietly();
       elements.articleList.replaceChildren();
       elements.articleList.setAttribute("aria-busy", "false");
       elements.resultCount.textContent = "0";
@@ -561,17 +586,16 @@ export function createAppController({
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      if (searchTimer !== null) windowRef.clearTimeout(searchTimer);
+      cancelSearchTimer();
       abortController.abort();
       drawerController.destroy();
-      database?.close?.();
-      database = null;
+      closeDatabaseQuietly();
     },
   };
 }
 
 if (typeof document !== "undefined" && typeof window !== "undefined") {
-  const controller = createAppController();
+  const controller = createAppController(window.__PAPER_RADAR_DEPENDENCIES__ ?? {});
   controller.start();
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) controller.destroy();
