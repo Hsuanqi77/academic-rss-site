@@ -133,6 +133,7 @@ def test_typography_uses_local_noto_sans_sc_without_resizing_exclusions() -> Non
         r"\.search-label\s*\{[^}]*font: 700 11px/1 var\(--ui\);",
         r"footer\s*\{[^}]*font: 10px/1\.4 ui-monospace, Consolas, monospace;",
         r"\.badge\s*\{[^}]*font: 700 11px/1 var\(--ui\);",
+        r"\.brand small\s*\{[^}]*font-size:\s*10px;",
         r"\.chip\s*\{[^}]*font-size: 11px;",
     )
     for contract in exclusion_contracts:
