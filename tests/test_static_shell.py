@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
+FONT_DIR = DOCS / "fonts" / "noto-sans-sc"
+NOTO_SANS_SC_PACKAGE = "@fontsource-variable/noto-sans-sc"
+NOTO_SANS_SC_VERSION = "5.2.10"
+NOTO_SANS_SC_TARBALL = (
+    "https://registry.npmjs.org/@fontsource-variable/noto-sans-sc/-/"
+    "noto-sans-sc-5.2.10.tgz"
+)
+NOTO_SANS_SC_INTEGRITY = (
+    "sha512-zdk10i5HrDQTXI7ldD61zToX1fsgig8vDTsu7zB48SXOitWfuX0e5viZAwnkHuhwh"
+    "096PU6X6i1AyAsbBCISpA=="
+)
 SQL_JS_1_10_2_SOURCES = {
     "sql-wasm.js": (
         "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js",
@@ -101,3 +113,50 @@ def test_shell_supports_drawer_accessibility_and_responsive_motion() -> None:
 def test_text_assets_do_not_contain_unicode_replacement_characters() -> None:
     for path in (DOCS / "index.html", DOCS / "styles.css", DOCS / "js" / "app.js"):
         assert "\ufffd" not in path.read_text(encoding="utf-8")
+
+
+def test_noto_sans_sc_is_pinned_auditable_and_fully_local() -> None:
+    metadata = (FONT_DIR / "FONT-METADATA.md").read_text(encoding="utf-8")
+    license_text = (FONT_DIR / "LICENSE.txt").read_text(encoding="utf-8")
+    checksums_text = (FONT_DIR / "SHA256SUMS").read_text(encoding="utf-8")
+    css = (DOCS / "styles.css").read_text(encoding="utf-8")
+
+    assert f"Package: `{NOTO_SANS_SC_PACKAGE}`" in metadata
+    assert f"Version: `{NOTO_SANS_SC_VERSION}`" in metadata
+    assert f"Tarball: `{NOTO_SANS_SC_TARBALL}`" in metadata
+    assert f"Integrity: `{NOTO_SANS_SC_INTEGRITY}`" in metadata
+    assert "Upstream font version: `v40`" in metadata
+    assert "SIL OPEN FONT LICENSE Version 1.1" in license_text
+
+    marker_start = f"/* BEGIN VENDORED NOTO SANS SC {NOTO_SANS_SC_VERSION} */"
+    marker_end = f"/* END VENDORED NOTO SANS SC {NOTO_SANS_SC_VERSION} */"
+    assert css.count(marker_start) == 1
+    assert css.count(marker_end) == 1
+    vendored_css = css.split(marker_start, 1)[1].split(marker_end, 1)[0]
+    faces = re.findall(r"@font-face\s*\{(.*?)\}", vendored_css, flags=re.DOTALL)
+    assert len(faces) == 98
+    assert all('font-family: "Noto Sans SC Variable";' in face for face in faces)
+    assert all("font-display: swap;" in face for face in faces)
+    assert all("font-weight: 100 900;" in face for face in faces)
+    assert "fonts.googleapis.com" not in css
+    assert "fonts.gstatic.com" not in css
+
+    css_files = set(re.findall(r"\./fonts/noto-sans-sc/([^)'\"]+\.woff2)", vendored_css))
+    directory_files = {path.name for path in FONT_DIR.glob("*.woff2")}
+    checksum_entries = {}
+    for line in checksums_text.splitlines():
+        digest, filename = line.split("  ", 1)
+        checksum_entries[filename] = digest
+
+    assert len(css_files) == 98
+    assert css_files == directory_files == set(checksum_entries)
+    assert "noto-sans-sc-latin-wght-normal.woff2" in css_files
+    assert not any(
+        excluded in filename
+        for filename in css_files
+        for excluded in ("cyrillic", "latin-ext", "vietnamese")
+    )
+    for filename in sorted(css_files):
+        payload = (FONT_DIR / filename).read_bytes()
+        assert payload.startswith(b"wOF2"), filename
+        assert hashlib.sha256(payload).hexdigest() == checksum_entries[filename]
