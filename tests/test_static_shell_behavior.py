@@ -142,6 +142,28 @@ def page_factory(
         page.set_default_timeout(5_000)
         if init_script:
             page.add_init_script(init_script)
+            page.route(
+                "**/js/app.js",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="text/javascript; charset=utf-8",
+                    body="""
+                      import { createAppController } from './controller.js';
+                      import { DEFAULT_STATE, parseState, serializeState } from './state.js';
+                      const controller = createAppController({
+                        ...window.__PAPER_RADAR_DEPENDENCIES__,
+                        defaultState: DEFAULT_STATE,
+                        parseStateFn: parseState,
+                        serializeStateFn: serializeState,
+                      });
+                      window.__testController = controller;
+                      window.__testStart = controller.start();
+                      window.addEventListener('pagehide', event => {
+                        if (!event.persisted) controller.destroy();
+                      });
+                    """,
+                ),
+            )
         body = paper_db_bytes if database_body is None else database_body
         page.route(
             "**/data/papers.db*",
@@ -365,14 +387,14 @@ def test_pagination_clear_and_popstate_restore_the_view(app_page: Page) -> None:
     assert app_page.locator("#search").input_value() == ""
     assert app_page.locator("#active-filter-count").text_content() == "0"
 
-    app_page.evaluate(
-        """() => {
-          history.pushState(null, '', '?q=Paper+03');
-          dispatchEvent(new PopStateEvent('popstate'));
-        }"""
-    )
+    app_page.evaluate("history.pushState(null, '', '?q=Paper+03')")
+    app_page.evaluate("history.pushState(null, '', '?q=Paper+04')")
+    app_page.go_back()
     app_page.wait_for_function("document.querySelector('#result-count').textContent === '1'")
     assert app_page.locator("#search").input_value() == "Paper 03"
+    app_page.go_forward()
+    app_page.wait_for_function("document.querySelector('#search').value === 'Paper 04'")
+    assert app_page.locator("#result-count").text_content() == "1"
 
 
 def test_empty_and_database_error_states_are_readable(
@@ -493,3 +515,36 @@ def test_startup_queries_once_and_pagehide_respects_bfcache(
         }"""
     )
     assert page.evaluate("window.__closed") == 1
+
+
+def test_destroy_during_pending_load_swallows_close_failure_and_stays_idempotent(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory(
+        init_script="""
+          window.__closed = 0;
+          window.__unhandled = [];
+          addEventListener('unhandledrejection', event => window.__unhandled.push(String(event.reason)));
+          window.__PAPER_RADAR_DEPENDENCIES__ = {
+            loadDatabaseFn: () => new Promise(resolve => {
+              window.__resolveLoad = () => resolve({
+                close() { window.__closed += 1; throw new Error('pending close failed'); },
+              });
+            }),
+            loadFilterOptionsFn: () => { throw new Error('must not initialize after destroy'); },
+            queryArticlesFn: () => { throw new Error('must not query after destroy'); },
+          };
+        """
+    )
+    page.wait_for_function("typeof window.__resolveLoad === 'function'")
+    page.evaluate("dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }))")
+    page.evaluate("window.__resolveLoad()")
+    page.wait_for_function("window.__closed === 1")
+    page.evaluate(
+        """() => {
+          window.__testController.destroy();
+          window.__testController.destroy();
+        }"""
+    )
+    assert page.evaluate("window.__closed") == 1
+    assert page.evaluate("window.__unhandled") == []

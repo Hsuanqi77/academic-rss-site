@@ -84,7 +84,9 @@ def test_static_assets_are_local_and_sqljs_is_vendored() -> None:
 
 
 def test_shell_supports_drawer_accessibility_and_responsive_motion() -> None:
-    app = (DOCS / "js" / "app.js").read_text(encoding="utf-8")
+    app = "\n".join(
+        (DOCS / "js" / name).read_text(encoding="utf-8") for name in ("app.js", "controller.js")
+    )
     css = (DOCS / "styles.css").read_text(encoding="utf-8")
 
     assert "aria-expanded" in app

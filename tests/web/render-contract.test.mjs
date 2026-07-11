@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { paginationItems, parseAuthors, safeExternalUrl } from "../../docs/js/app.js";
+import { paginationItems, parseAuthors, safeExternalUrl } from "../../docs/js/controller.js";
 
 test("application shell exposes every enhanced filter", async () => {
   const html = await readFile(new URL("../../docs/index.html", import.meta.url), "utf8");
@@ -12,12 +12,20 @@ test("application shell exposes every enhanced filter", async () => {
   ]) assert.match(html, new RegExp(`id=["']${id}["']`));
 });
 
-test("controller imports state and database modules without unsafe HTML sinks", async () => {
+test("production bootstrap uses only real modules and exposes no test hook", async () => {
   const app = await readFile(new URL("../../docs/js/app.js", import.meta.url), "utf8");
   assert.match(app, /from ["']\.\/db\.js["']/);
   assert.match(app, /from ["']\.\/state\.js["']/);
-  assert.doesNotMatch(app, /\.innerHTML\s*=|insertAdjacentHTML|document\.write/u);
-  assert.match(app, /textContent/u);
+  assert.match(app, /from ["']\.\/controller\.js["']/);
+  assert.doesNotMatch(app, /__PAPER_RADAR|TEST|test hook/ui);
+});
+
+test("controller is independently testable and avoids unsafe HTML sinks", async () => {
+  const controller = await readFile(new URL("../../docs/js/controller.js", import.meta.url), "utf8");
+  assert.doesNotMatch(controller, /\.innerHTML\s*=|insertAdjacentHTML|document\.write/u);
+  assert.doesNotMatch(controller, /__PAPER_RADAR/u);
+  assert.match(controller, /textContent/u);
+  assert.match(controller, /closeDatabaseQuietly\(\)/u);
 });
 
 test("safe rendering helpers reject active URLs and tolerate malformed authors", () => {
