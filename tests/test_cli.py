@@ -24,17 +24,37 @@ def test_cli_requires_a_subcommand() -> None:
         parser.parse_args([])
 
 
-def test_default_paths_are_anchored_to_project_not_current_directory(
+def test_default_paths_are_resolved_from_current_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
     args = cli.build_parser().parse_args(["update"])
 
-    assert args.feeds == cli.PROJECT_ROOT / "feeds.yml"
-    assert args.topics == cli.PROJECT_ROOT / "topics.yml"
-    assert args.database == cli.PROJECT_ROOT / "data" / "papers.db"
-    assert args.published == cli.PROJECT_ROOT / "docs" / "data" / "papers.db"
+    assert args.feeds == tmp_path / "feeds.yml"
+    assert args.topics == tmp_path / "topics.yml"
+    assert args.database == tmp_path / "data" / "papers.db"
+    assert args.published == tmp_path / "docs" / "data" / "papers.db"
+
+
+def test_dotenv_is_loaded_from_current_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loaded: list[Path] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_dotenv", lambda path: loaded.append(path))
+    monkeypatch.setattr(
+        cli,
+        "_fetch",
+        lambda args: RunSummary("error", 0, 0, 0, 1, (), ("expected",)),
+    )
+
+    assert cli.main(["fetch"]) == 1
+
+    assert loaded == [tmp_path / ".env"]
+    assert json.loads(capsys.readouterr().out)["publish_allowed"] is False
 
 
 def test_fetch_emits_json_and_returns_zero_only_for_success(

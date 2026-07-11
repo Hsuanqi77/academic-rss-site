@@ -16,20 +16,18 @@ from paper_radar.pipeline import update_database
 from paper_radar.validation import ValidationError, publish_database, validate_database
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_WORKING = PROJECT_ROOT / "data" / "papers.db"
-DEFAULT_PUBLISHED = PROJECT_ROOT / "docs" / "data" / "papers.db"
-
-
 def build_parser() -> argparse.ArgumentParser:
+    project_root = Path.cwd()
     parser = argparse.ArgumentParser(prog="paper-radar")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("fetch", "validate", "publish", "update"):
         command = subparsers.add_parser(name)
-        command.add_argument("--feeds", type=Path, default=PROJECT_ROOT / "feeds.yml")
-        command.add_argument("--topics", type=Path, default=PROJECT_ROOT / "topics.yml")
-        command.add_argument("--database", type=Path, default=DEFAULT_WORKING)
-        command.add_argument("--published", type=Path, default=DEFAULT_PUBLISHED)
+        command.add_argument("--feeds", type=Path, default=project_root / "feeds.yml")
+        command.add_argument("--topics", type=Path, default=project_root / "topics.yml")
+        command.add_argument("--database", type=Path, default=project_root / "data" / "papers.db")
+        command.add_argument(
+            "--published", type=Path, default=project_root / "docs" / "data" / "papers.db"
+        )
     return parser
 
 
@@ -37,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     error_context: dict[str, Any] = {"command": args.command}
     try:
-        load_dotenv(PROJECT_ROOT / ".env")
+        load_dotenv(Path.cwd() / ".env")
         if args.command == "fetch":
             summary = _fetch(args)
             payload = {"command": "fetch", "result": asdict(summary)}
