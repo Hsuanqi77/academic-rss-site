@@ -63,19 +63,41 @@ def test_each_filter_and_combination_has_an_exact_orthogonal_result(
 ) -> None:
     page.goto(site_url)
     _wait_ready(page)
+
+    def assert_result(expected_uids: set[str]) -> None:
+        expect(page.locator("#result-count")).to_have_text(str(len(expected_uids)))
+        expect(page.locator("#status")).to_contain_text(f"已显示 {len(expected_uids)} 篇")
+        assert _visible_uids(page) == expected_uids
+
+    aip_uids = {
+        "malicious",
+        "unicode",
+        "matrix-00",
+        "matrix-01",
+        "matrix-02",
+        "matrix-09",
+    }
     scenarios = (
-        (
-            "#journal",
-            "apl",
-            {"malicious", "unicode", "matrix-00", "matrix-01", "matrix-02", "matrix-09"},
-        ),
+        ("#journal", "apl", aip_uids),
+        ("#publisher", "aip", aip_uids),
         ("#oa-status", "open", {"unicode", "matrix-00", "matrix-04", "matrix-08", "matrix-09"}),
         ("#article-type", "review", {"unicode", "matrix-01", "matrix-04", "matrix-07"}),
     )
     for selector, value, expected_uids in scenarios:
         page.locator(selector).select_option(value)
-        expect(page.locator("#result-count")).to_have_text(str(len(expected_uids)))
-        assert _visible_uids(page) == expected_uids
+        assert_result(expected_uids)
+        page.locator("#clear-filters").click()
+        expect(page.locator("#result-count")).to_have_text("32")
+
+    date_scenarios = (
+        ("#date-from", "2026-04-01", {"malicious", "unicode"}),
+        ("#date-to", "2026-01-03", {"filler-00", "filler-01", "filler-02"}),
+    )
+    for selector, value, expected_uids in date_scenarios:
+        control = page.locator(selector)
+        control.fill(value)
+        control.press("Tab")
+        assert_result(expected_uids)
         page.locator("#clear-filters").click()
         expect(page.locator("#result-count")).to_have_text("32")
 
@@ -89,8 +111,7 @@ def test_each_filter_and_combination_has_an_exact_orthogonal_result(
         "matrix-07",
         "matrix-09",
     }
-    expect(page.locator("#result-count")).to_have_text(str(len(baw_uids)))
-    assert _visible_uids(page) == baw_uids
+    assert_result(baw_uids)
     page.locator("#clear-filters").click()
 
     page.locator("#journal").select_option("ieee-tu")
