@@ -10,7 +10,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from paper_radar.config import ConfigError, load_feeds, load_topics
+from paper_radar.config import ConfigError, load_feeds, load_topic_catalog
 from paper_radar.models import RunSummary
 from paper_radar.pipeline import update_database
 from paper_radar.validation import ValidationError, publish_database, validate_database
@@ -101,10 +101,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _fetch(args: argparse.Namespace) -> RunSummary:
+    catalog = load_topic_catalog(args.topics)
     return update_database(
         args.database,
         load_feeds(args.feeds),
-        load_topics(args.topics),
+        catalog.topics,
         unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
     )
 

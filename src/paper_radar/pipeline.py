@@ -10,19 +10,15 @@ from typing import Any
 
 import httpx
 
-from paper_radar.classify import classify_article
 from paper_radar.config import FeedConfig, TopicConfig
 from paper_radar.database import (
     connect_database,
     create_run,
     finish_run,
-    get_article,
     get_feed_state,
     initialize_database,
     mark_journal_status,
     register_journal,
-    replace_article_tags,
-    resolve_article_uid,
     upsert_article,
 )
 from paper_radar.enrich import enrich_article, validate_unpaywall_email
@@ -30,6 +26,7 @@ from paper_radar.feeds import FeedFetchError, fetch_feed, parse_feed_bytes
 from paper_radar.http_client import PoliteClient, retry_operation
 from paper_radar.models import ArticleRecord, FeedFetchResult, RunSummary
 from paper_radar.normalize import normalize_item
+from paper_radar.reclassify import reclassify_all_articles
 
 
 _MAX_ITEM_ERRORS = 20
@@ -182,18 +179,6 @@ def update_database(
                             skipped += 1
                         else:
                             raise RuntimeError(f"unsupported persistence outcome: {outcome!r}")
-                        persisted_uid = resolve_article_uid(connection, article)
-                        if persisted_uid is None:
-                            raise PipelineInvariantError(
-                                "persisted article identity could not be resolved"
-                            )
-                        persisted_article = get_article(connection, persisted_uid)
-                        if persisted_article is None:
-                            raise PipelineInvariantError(
-                                "canonical persisted article could not be reloaded"
-                            )
-                        matched_topics = classify_article(persisted_article, topic_list)
-                        replace_article_tags(connection, persisted_uid, matched_topics)
                     except (AssertionError, PipelineContractError, PipelineInvariantError):
                         raise
                     except Exception as exc:
@@ -255,6 +240,7 @@ def update_database(
                 except BaseException as journal_error:
                     raise journal_error from feed_error
 
+        classification = reclassify_all_articles(connection, topic_list)
         status, diagnostic = _terminal_status(
             enabled_count=len(enabled_feeds),
             successful_count=len(successful_feeds),
@@ -277,6 +263,7 @@ def update_database(
             failed=failed,
             successful_feeds=tuple(successful_feeds),
             failed_feeds=tuple(failed_feeds),
+            classification=classification,
         )
         _finish_run_with_retry(
             connection,

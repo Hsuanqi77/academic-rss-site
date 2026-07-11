@@ -146,3 +146,4 @@ class RunSummary:
     failed: int
     successful_feeds: tuple[str, ...]
     failed_feeds: tuple[str, ...]
+    classification: ClassificationSummary

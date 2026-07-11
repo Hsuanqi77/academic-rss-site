@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import paper_radar.cli as cli
-from paper_radar.models import RunSummary
+from paper_radar.models import ClassificationSummary, RunSummary
 from paper_radar.validation import ValidationError, ValidationReport
 
 
@@ -16,6 +17,37 @@ def _report() -> ValidationReport:
         latest_date="2026-07-03T00:00:00Z",
         schema_version=3,
     )
+
+
+def _classification(
+    articles_scanned: int = 0,
+    articles_tagged: int = 0,
+    tag_assignments: int = 0,
+    active_tags: int = 0,
+) -> ClassificationSummary:
+    return ClassificationSummary(
+        articles_scanned,
+        articles_tagged,
+        tag_assignments,
+        active_tags,
+    )
+
+
+def _summary(status: str = "ok") -> RunSummary:
+    return RunSummary(
+        status,
+        1 if status != "error" else 0,
+        0,
+        0,
+        int(status != "ok"),
+        ("feed",) if status != "error" else (),
+        ("bad",) if status != "ok" else (),
+        _classification(1, 1, 2, 2),
+    )
+
+
+def _catalog(*topics: object) -> SimpleNamespace:
+    return SimpleNamespace(topics=topics)
 
 
 def test_cli_requires_a_subcommand() -> None:
@@ -48,7 +80,9 @@ def test_dotenv_is_loaded_from_current_directory(
     monkeypatch.setattr(
         cli,
         "_fetch",
-        lambda args: RunSummary("error", 0, 0, 0, 1, (), ("expected",)),
+        lambda args: RunSummary(
+            "error", 0, 0, 0, 1, (), ("expected",), _classification()
+        ),
     )
 
     assert cli.main(["fetch"]) == 1
@@ -61,12 +95,18 @@ def test_fetch_emits_json_and_returns_zero_only_for_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: ["feed"])
-    monkeypatch.setattr(cli, "load_topics", lambda path: ["topic"])
+    catalog_loads: list[Path] = []
+    update_calls: list[tuple[object, object, object]] = []
     monkeypatch.setattr(
         cli,
-        "update_database",
-        lambda *args, **kwargs: RunSummary("ok", 1, 0, 0, 0, ("feed",), ()),
+        "load_topic_catalog",
+        lambda path: catalog_loads.append(path) or _catalog("topic"),
     )
+    def update_database(*args: object, **kwargs: object) -> RunSummary:
+        update_calls.append((args[0], args[1], args[2]))
+        return _summary()
+
+    monkeypatch.setattr(cli, "update_database", update_database)
 
     code = cli.main(["fetch", "--database", str(tmp_path / "working.db")])
 
@@ -74,17 +114,25 @@ def test_fetch_emits_json_and_returns_zero_only_for_success(
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "fetch"
     assert payload["result"]["status"] == "ok"
+    assert payload["result"]["classification"] == {
+        "active_tags": 2,
+        "articles_scanned": 1,
+        "articles_tagged": 1,
+        "tag_assignments": 2,
+    }
+    assert len(catalog_loads) == 1
+    assert update_calls == [(tmp_path / "working.db", ["feed"], ("topic",))]
 
 
 def test_fetch_treats_partial_as_degraded_success(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
-    monkeypatch.setattr(cli, "load_topics", lambda path: [])
+    monkeypatch.setattr(cli, "load_topic_catalog", lambda path: _catalog())
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary("partial", 1, 0, 0, 1, ("good",), ("bad",)),
+        lambda *args, **kwargs: _summary("partial"),
     )
 
     assert cli.main(["fetch"]) == 0
@@ -95,11 +143,11 @@ def test_fetch_returns_nonzero_for_error_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
-    monkeypatch.setattr(cli, "load_topics", lambda path: [])
+    monkeypatch.setattr(cli, "load_topic_catalog", lambda path: _catalog())
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary("error", 0, 0, 0, 1, (), ("bad",)),
+        lambda *args, **kwargs: _summary("error"),
     )
 
     assert cli.main(["fetch"]) == 1
@@ -121,13 +169,22 @@ def test_update_orders_successful_fetch_validate_publish_and_reports_sizes(
     working.write_bytes(b"working")
     published.write_bytes(b"published")
     monkeypatch.setattr(cli, "load_feeds", lambda path: ["feed"])
-    monkeypatch.setattr(cli, "load_topics", lambda path: ["topic"])
+    monkeypatch.setattr(cli, "load_topic_catalog", lambda path: _catalog("topic"))
     monkeypatch.setattr(
         cli,
         "update_database",
         lambda *args, **kwargs: (
             calls.append("fetch")
-            or RunSummary(status, 1, 0, 0, int(status == "partial"), ("feed",), ())
+            or RunSummary(
+                status,
+                1,
+                0,
+                0,
+                int(status == "partial"),
+                ("feed",),
+                (),
+                _classification(1, 1, 2, 2),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -157,6 +214,12 @@ def test_update_orders_successful_fetch_validate_publish_and_reports_sizes(
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "update"
     assert payload["result"]["status"] == status
+    assert payload["result"]["classification"] == {
+        "active_tags": 2,
+        "articles_scanned": 1,
+        "articles_tagged": 1,
+        "tag_assignments": 2,
+    }
     assert payload["working_size_bytes"] == len(b"working")
     assert payload["published_size_bytes"] == len(b"published")
     assert payload["publish_allowed"] is True
@@ -166,11 +229,11 @@ def test_update_does_not_validate_or_publish_after_error_fetch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
-    monkeypatch.setattr(cli, "load_topics", lambda path: [])
+    monkeypatch.setattr(cli, "load_topic_catalog", lambda path: _catalog())
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary("error", 0, 0, 0, 1, (), ("bad",)),
+        lambda *args, **kwargs: _summary("error"),
     )
     monkeypatch.setattr(cli, "validate_database", lambda *args, **kwargs: pytest.fail())
     monkeypatch.setattr(cli, "publish_database", lambda *args, **kwargs: pytest.fail())
@@ -185,11 +248,11 @@ def test_update_does_not_publish_after_failed_validation(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(cli, "load_feeds", lambda path: [])
-    monkeypatch.setattr(cli, "load_topics", lambda path: [])
+    monkeypatch.setattr(cli, "load_topic_catalog", lambda path: _catalog())
     monkeypatch.setattr(
         cli,
         "update_database",
-        lambda *args, **kwargs: RunSummary("ok", 1, 0, 0, 0, (), ()),
+        lambda *args, **kwargs: _summary(),
     )
     monkeypatch.setattr(
         cli,

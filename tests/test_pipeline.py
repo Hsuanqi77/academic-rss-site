@@ -14,14 +14,21 @@ from paper_radar.database import (
     initialize_database,
     mark_journal_status,
     register_journal,
+    replace_article_tags,
+    upsert_article,
 )
 from paper_radar.feeds import FeedParseError
-from paper_radar.models import ArticleRecord, FeedFetchResult, RawFeedItem, RunSummary
+from paper_radar.models import (
+    ArticleRecord,
+    ClassificationSummary,
+    FeedFetchResult,
+    RawFeedItem,
+    RunSummary,
+)
 from paper_radar.pipeline import (
     ContractError,
     PipelineConfigurationError,
     PipelineContractError,
-    PipelineInvariantError,
     update_database,
 )
 
@@ -36,13 +43,57 @@ def _feed(feed_id: str, *, enabled: bool = True, host: str = "example.test") -> 
     )
 
 
-def _topic(topic_id: str = "saw") -> TopicConfig:
+def _topic(
+    topic_id: str = "saw", group: str = "acoustic-rf", *keywords: str
+) -> TopicConfig:
     return TopicConfig(
         id=topic_id,
         label=topic_id.upper(),
-        keywords=("SAW",),
-        group="acoustic-rf",
+        keywords=keywords or ("SAW",),
+        group=group,
     )
+
+
+def _classification(
+    articles_scanned: int = 0,
+    articles_tagged: int = 0,
+    tag_assignments: int = 0,
+    active_tags: int = 0,
+) -> ClassificationSummary:
+    return ClassificationSummary(
+        articles_scanned,
+        articles_tagged,
+        tag_assignments,
+        active_tags,
+    )
+
+
+def _article(*, title: str, uid: str = "article-1") -> ArticleRecord:
+    return ArticleRecord(
+        uid=uid,
+        doi=None,
+        journal_id="feed",
+        title=title,
+        abstract=None,
+        authors=(),
+        published_at=None,
+        article_type="other",
+        article_url=f"https://example.test/{uid}",
+        normalized_url=f"https://example.test/{uid}",
+        oa_status="unknown",
+        source_feed_url="https://example.test/feed.xml",
+        metadata_status="rss_only",
+    )
+
+
+def _seed_article(database_path: Path, article: ArticleRecord) -> None:
+    connection = connect_database(database_path)
+    try:
+        initialize_database(connection)
+        register_journal(connection, _feed("feed"))
+        upsert_article(connection, article)
+    finally:
+        connection.close()
 
 
 def _rss(*items: tuple[str, str]) -> bytes:
@@ -86,7 +137,7 @@ def _rows(database_path: Path, sql: str) -> list[sqlite3.Row]:
 
 
 def test_run_summary_is_immutable_and_slotted() -> None:
-    summary = RunSummary("ok", 1, 2, 3, 0, ("good",), ())
+    summary = RunSummary("ok", 1, 2, 3, 0, ("good",), (), _classification())
 
     assert not hasattr(summary, "__dict__")
     with pytest.raises(FrozenInstanceError):
@@ -114,7 +165,9 @@ def test_good_and_bad_feeds_are_isolated_with_exact_persisted_summary(tmp_path: 
         min_interval=0,
     )
 
-    assert summary == RunSummary("partial", 1, 0, 0, 1, ("good",), ("bad",))
+    assert summary == RunSummary(
+        "partial", 1, 0, 0, 1, ("good",), ("bad",), _classification(1, 1, 1, 1)
+    )
     journals = {row["id"]: row for row in _rows(database_path, "SELECT * FROM journals")}
     assert journals["good"]["last_status"] == "ok"
     assert journals["good"]["last_error"] is None
@@ -198,7 +251,7 @@ def test_not_modified_preserves_missing_validator_and_updates_present_one(tmp_pa
         min_interval=0,
     )
 
-    assert summary == RunSummary("ok", 0, 0, 0, 0, ("feed",), ())
+    assert summary == RunSummary("ok", 0, 0, 0, 0, ("feed",), (), _classification())
     journal = _rows(database_path, "SELECT * FROM journals")[0]
     assert journal["last_status"] == "not_modified"
     assert (journal["etag"], journal["last_modified"]) == (
@@ -257,7 +310,9 @@ def test_bad_item_is_counted_and_feed_is_partial_while_later_item_persists(
         min_interval=0,
     )
 
-    assert summary == RunSummary("partial", 1, 0, 0, 1, ("feed",), ())
+    assert summary == RunSummary(
+        "partial", 1, 0, 0, 1, ("feed",), (), _classification(1, 1, 1, 1)
+    )
     journal = _rows(database_path, "SELECT * FROM journals")[0]
     assert journal["last_status"] == "partial"
     notes = json.loads(_rows(database_path, "SELECT notes FROM runs_log")[0]["notes"])
@@ -265,42 +320,116 @@ def test_bad_item_is_counted_and_feed_is_partial_while_later_item_persists(
     assert notes["omitted_item_errors"] == 0
 
 
-def test_tag_failure_keeps_persisted_outcome_and_next_feed_continues(
+def test_not_modified_update_reclassifies_every_stored_article(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    database_path = tmp_path / "radar.db"
-    feeds = [_feed("first"), _feed("second")]
-    original_replace = pipeline_module.replace_article_tags
-    calls = 0
+    database_path = tmp_path / "papers.db"
+    _seed_article(database_path, _article(title="AlScN BAW resonator"))
+    result = FeedFetchResult(
+        content=None,
+        etag='"same"',
+        last_modified="Fri, 10 Jul 2026 00:00:00 GMT",
+        not_modified=True,
+    )
+    topics = (
+        _topic("baw", "acoustic-rf", "BAW"),
+        _topic("alscn", "piezo-ferroelectric", "AlScN"),
+    )
+    original_reclassify = pipeline_module.reclassify_all_articles
+    reclassification_calls = 0
 
-    def replace_with_one_failure(
-        connection: sqlite3.Connection, article_uid: str, topics: object
-    ) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("secret tag detail")
-        original_replace(connection, article_uid, topics)  # type: ignore[arg-type]
+    def counting_reclassify(
+        connection: sqlite3.Connection, configured_topics: tuple[TopicConfig, ...]
+    ) -> ClassificationSummary:
+        nonlocal reclassification_calls
+        reclassification_calls += 1
+        return original_reclassify(connection, configured_topics)
 
-    monkeypatch.setattr(pipeline_module, "replace_article_tags", replace_with_one_failure)
+    monkeypatch.setattr(pipeline_module, "reclassify_all_articles", counting_reclassify)
 
     summary = update_database(
         database_path,
-        feeds,
-        [_topic()],
-        fetcher=lambda client, feed, **kwargs: _result(
-            (f"{feed.id} SAW", f"https://example.test/{feed.id}/article")
+        [_feed("feed")],
+        topics,
+        fetcher=lambda *_args, **_kwargs: result,
+        enricher=_identity_enricher,
+        min_interval=0,
+    )
+
+    assert summary.classification == ClassificationSummary(1, 1, 2, 2)
+    assert reclassification_calls == 1
+    assert [
+        row["tag_id"]
+        for row in _rows(database_path, "SELECT tag_id FROM article_tags ORDER BY tag_id")
+    ] == ["alscn", "baw"]
+
+
+def test_reclassification_failure_is_run_fatal_and_preserves_existing_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "radar.db"
+    article = _article(title="SAW resonator")
+    _seed_article(database_path, article)
+    connection = connect_database(database_path)
+    try:
+        replace_article_tags(connection, article.uid, [_topic("existing")])
+    finally:
+        connection.close()
+    monkeypatch.setattr(
+        pipeline_module,
+        "reclassify_all_articles",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret tag detail")),
+    )
+
+    with pytest.raises(RuntimeError, match="secret tag detail"):
+        update_database(
+            database_path,
+            [_feed("feed")],
+            [_topic("replacement")],
+            fetcher=lambda *args, **kwargs: FeedFetchResult(
+                content=None,
+                etag='"same"',
+                last_modified=None,
+                not_modified=True,
+            ),
+            enricher=_identity_enricher,
+            min_interval=0,
+        )
+
+    assert [
+        row["tag_id"] for row in _rows(database_path, "SELECT tag_id FROM article_tags")
+    ] == ["existing"]
+    run = _rows(database_path, "SELECT status, failed_count, notes FROM runs_log")[0]
+    assert (run["status"], run["failed_count"]) == ("error", 0)
+    notes = json.loads(run["notes"])
+    assert notes["diagnostic"] == "RuntimeError"
+    assert "secret tag detail" not in run["notes"]
+
+
+def test_partial_update_still_reclassifies_all_stored_articles(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "radar.db"
+    _seed_article(database_path, _article(title="AlScN BAW resonator"))
+
+    summary = update_database(
+        database_path,
+        [_feed("good"), _feed("bad")],
+        (
+            _topic("baw", "acoustic-rf", "BAW"),
+            _topic("alscn", "piezo-ferroelectric", "AlScN"),
+        ),
+        fetcher=lambda client, feed, **kwargs: (
+            FeedFetchResult(None, None, None, True)
+            if feed.id == "good"
+            else (_ for _ in ()).throw(FeedParseError("failed"))
         ),
         enricher=_identity_enricher,
         min_interval=0,
     )
 
-    assert summary == RunSummary("partial", 2, 0, 0, 1, ("first", "second"), ())
-    assert len(_rows(database_path, "SELECT uid FROM articles")) == 2
-    journals = {
-        row["id"]: row["last_status"] for row in _rows(database_path, "SELECT * FROM journals")
-    }
-    assert journals == {"first": "partial", "second": "ok"}
+    assert summary.status == "partial"
+    assert summary.classification == ClassificationSummary(1, 1, 2, 2)
 
 
 def test_tags_use_persisted_survivor_uid_after_url_only_to_doi_transition(
@@ -409,22 +538,6 @@ def test_classification_sees_abstract_merged_by_upsert(tmp_path: Path) -> None:
         )
 
     assert _rows(database_path, "SELECT tag_id FROM article_tags")[0]["tag_id"] == "saw"
-
-
-def test_missing_canonical_article_is_a_programming_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(pipeline_module, "get_article", lambda *args: None)
-
-    with pytest.raises(PipelineInvariantError, match="canonical persisted article"):
-        update_database(
-            tmp_path / "radar.db",
-            [_feed("feed")],
-            [],
-            fetcher=lambda *args, **kwargs: _result(("Article", "https://example.test/article")),
-            enricher=_identity_enricher,
-            min_interval=0,
-        )
 
 
 def test_partial_feed_does_not_advance_validators_and_next_run_repairs(
@@ -749,7 +862,9 @@ def test_journal_status_sqlite_error_is_not_silent_and_next_feed_continues(
         min_interval=0,
     )
 
-    assert summary == RunSummary("partial", 0, 0, 0, 1, ("good",), ("bad",))
+    assert summary == RunSummary(
+        "partial", 0, 0, 0, 1, ("good",), ("bad",), _classification()
+    )
     run = _rows(database_path, "SELECT status, failed_count, notes FROM runs_log")[0]
     assert (run["status"], run["failed_count"]) == ("partial", 1)
     notes = json.loads(run["notes"])
@@ -781,7 +896,7 @@ def test_all_disabled_is_error_without_fetching_or_false_failure_count(tmp_path:
         min_interval=0,
     )
 
-    assert summary == RunSummary("error", 0, 0, 0, 0, (), ())
+    assert summary == RunSummary("error", 0, 0, 0, 0, (), (), _classification())
     run = _rows(database_path, "SELECT * FROM runs_log")[0]
     assert json.loads(run["notes"])["diagnostic"] == "no enabled feeds configured"
     assert _rows(database_path, "SELECT * FROM journals") == []
@@ -797,7 +912,7 @@ def test_only_failed_feed_produces_error_status(tmp_path: Path) -> None:
         min_interval=0,
     )
 
-    assert summary == RunSummary("error", 0, 0, 0, 1, (), ("bad",))
+    assert summary == RunSummary("error", 0, 0, 0, 1, (), ("bad",), _classification())
 
 
 def test_invalid_nonblank_unpaywall_email_fails_before_database_or_fetch(tmp_path: Path) -> None:
