@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 from collections.abc import Iterator
@@ -121,41 +122,65 @@ def published_site(tmp_path_factory: pytest.TempPathFactory) -> PublishedSite:
                 ("baw", "saw"),
             ),
         ]
-        start = datetime(2026, 1, 1, tzinfo=UTC)
-        journal_ids = tuple(feed.id for feed in feeds)
-        for index in range(30):
-            journal_id = journal_ids[index % len(journal_ids)]
+        matrix_cases = (
+            ("apl", "research", "open", ("baw",)),
+            ("apl", "review", "closed", ("saw",)),
+            ("apl", "editorial", "unknown", ("ultrasound",)),
+            ("ieee-tu", "research", "closed", ("baw", "saw")),
+            ("ieee-tu", "review", "open", ("saw",)),
+            ("ieee-tu", "editorial", "unknown", ("baw",)),
+            ("ieee-sensors", "research", "unknown", ("ultrasound",)),
+            ("ieee-sensors", "review", "closed", ("baw",)),
+            ("ieee-sensors", "editorial", "open", ("saw", "ultrasound")),
+            ("apl", "research", "open", ("baw", "ultrasound")),
+        )
+        matrix_start = datetime(2026, 3, 1, tzinfo=UTC)
+        for index, (journal_id, article_type, oa_status, tag_ids) in enumerate(matrix_cases):
             feed = next(item for item in feeds if item.id == journal_id)
-            published_at = None if index == 7 else (start + timedelta(days=index)).isoformat()
             records.append(
                 (
                     ArticleRecord(
-                        uid=f"paper-{index:02d}",
-                        doi=f"10.9999/paper-{index:02d}",
+                        uid=f"matrix-{index:02d}",
+                        doi=f"10.9999/matrix-{index:02d}",
                         journal_id=journal_id,
-                        title=f"Paper {index:02d} AlScN acoustic device",
-                        abstract=None
-                        if index == 7
-                        else f"Fixture abstract {index:02d} for filtering.",
-                        authors=() if index == 7 else (f"Author {index:02d}",),
-                        published_at=published_at,
-                        article_type=("research", "review", "editorial")[index % 3],
-                        article_url=f"https://example.test/articles/{index:02d}",
-                        normalized_url=f"https://example.test/articles/{index:02d}",
-                        oa_status=("open", "closed", "unknown")[index % 3],
+                        title=f"Matrix {index:02d} acoustic device",
+                        abstract=f"Orthogonal matrix fixture {index:02d}.",
+                        authors=(f"Matrix Author {index:02d}",),
+                        published_at=(matrix_start + timedelta(days=index)).isoformat(),
+                        article_type=article_type,
+                        article_url=f"https://example.test/matrix/{index:02d}",
+                        normalized_url=f"https://example.test/matrix/{index:02d}",
+                        oa_status=oa_status,
                         source_feed_url=feed.feed_url,
                         metadata_status="rss_only",
                     ),
-                    tuple(
-                        tag
-                        for tag, selected in (
-                            ("baw", index % 2 == 0),
-                            ("saw", index % 3 == 0),
-                            ("ultrasound", index % 5 == 0),
-                        )
-                        if selected
-                    )
-                    or ("ultrasound",),
+                    tag_ids,
+                )
+            )
+
+        filler_start = datetime(2026, 1, 1, tzinfo=UTC)
+        filler_feed = next(item for item in feeds if item.id == "ieee-sensors")
+        for index in range(20):
+            records.append(
+                (
+                    ArticleRecord(
+                        uid=f"filler-{index:02d}",
+                        doi=f"10.9999/filler-{index:02d}",
+                        journal_id=filler_feed.id,
+                        title=f"Filler {index:02d} reliability study",
+                        abstract=None if index == 7 else f"Pagination filler {index:02d}.",
+                        authors=() if index == 7 else (f"Filler Author {index:02d}",),
+                        published_at=None
+                        if index == 7
+                        else (filler_start + timedelta(days=index)).isoformat(),
+                        article_type="editorial",
+                        article_url=f"https://example.test/filler/{index:02d}",
+                        normalized_url=f"https://example.test/filler/{index:02d}",
+                        oa_status="unknown",
+                        source_feed_url=filler_feed.feed_url,
+                        metadata_status="rss_only",
+                    ),
+                    ("ultrasound",),
                 )
             )
 
@@ -205,7 +230,10 @@ def _launch_browser(playwright: Playwright) -> Browser:
             return playwright.chromium.launch(headless=True, **options)
         except Error as error:
             failures.append(f"{label}: {str(error).splitlines()[0]}")
-    pytest.skip("No Playwright-compatible browser is installed. " + " | ".join(failures))
+    diagnostic = "No Playwright-compatible browser is installed. " + " | ".join(failures)
+    if os.environ.get("PAPER_RADAR_ALLOW_BROWSER_SKIP") == "1":
+        pytest.skip(diagnostic)
+    pytest.fail(diagnostic)
 
 
 @pytest.fixture(scope="module")
@@ -226,8 +254,29 @@ def browser_context(e2e_browser: Browser) -> Iterator[BrowserContext]:
 
 
 @pytest.fixture
-def page(browser_context: BrowserContext) -> Iterator[Page]:
+def page(browser_context: BrowserContext, site_url: str) -> Iterator[Page]:
     page = browser_context.new_page()
     page.set_default_timeout(7_000)
-    yield page
-    page.close()
+    console_errors: list[str] = []
+    page_errors: list[str] = []
+    failed_requests: list[str] = []
+    page.on(
+        "console",
+        lambda message: console_errors.append(message.text) if message.type == "error" else None,
+    )
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.on(
+        "requestfailed",
+        lambda request: (
+            failed_requests.append(f"{request.url}: {request.failure}")
+            if request.url.startswith(site_url)
+            else None
+        ),
+    )
+    try:
+        yield page
+        assert console_errors == [], "console errors: " + " | ".join(console_errors)
+        assert page_errors == [], "page errors: " + " | ".join(page_errors)
+        assert failed_requests == [], "same-origin request failures: " + " | ".join(failed_requests)
+    finally:
+        page.close()

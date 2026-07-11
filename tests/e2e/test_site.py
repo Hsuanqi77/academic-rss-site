@@ -16,19 +16,19 @@ def _query(page: Page) -> dict[str, list[str]]:
     return parse_qs(urlparse(page.url).query)
 
 
+def _visible_uids(page: Page) -> set[str]:
+    return set(
+        page.locator(".article-card").evaluate_all(
+            "cards => cards.map(card => card.dataset.articleUid)"
+        )
+    )
+
+
 def test_initial_real_http_load_has_no_browser_errors(
     page: Page,
     site_url: str,
     published_site: Any,
 ) -> None:
-    console_errors: list[str] = []
-    page_errors: list[str] = []
-    page.on(
-        "console",
-        lambda message: console_errors.append(message.text) if message.type == "error" else None,
-    )
-    page.on("pageerror", lambda error: page_errors.append(str(error)))
-
     response = page.goto(site_url)
     assert response is not None and response.ok
     _wait_ready(page)
@@ -39,8 +39,6 @@ def test_initial_real_http_load_has_no_browser_errors(
     expect(status).to_have_attribute("aria-live", "polite")
     expect(status).to_have_class("status status-sr-only")
     expect(status).to_contain_text("第 1 页")
-    assert console_errors == []
-    assert page_errors == []
 
 
 def test_share_url_restores_search_tag_and_journal_after_refresh(page: Page, site_url: str) -> None:
@@ -49,15 +47,58 @@ def test_share_url_restores_search_tag_and_journal_after_refresh(page: Page, sit
     expect(page.locator("#search")).to_have_value("AlScN")
     expect(page.locator("#journal")).to_have_value("apl")
     expect(page.locator('[data-tag="baw"]')).to_be_checked()
-    count = int(page.locator("#result-count").inner_text())
-    assert count >= 1
-    expect(page.locator(".article-card h2")).to_contain_text(["AlScN"] * min(count, 20))
+    expect(page.locator("#result-count")).to_have_text("1")
+    assert _visible_uids(page) == {"unicode"}
     before = page.url
     page.reload()
     _wait_ready(page)
     assert page.url == before
-    expect(page.locator("#result-count")).to_have_text(str(count))
+    expect(page.locator("#result-count")).to_have_text("1")
     expect(page.locator('[data-tag="baw"]')).to_be_checked()
+
+
+def test_each_filter_and_combination_has_an_exact_orthogonal_result(
+    page: Page,
+    site_url: str,
+) -> None:
+    page.goto(site_url)
+    _wait_ready(page)
+    scenarios = (
+        (
+            "#journal",
+            "apl",
+            {"malicious", "unicode", "matrix-00", "matrix-01", "matrix-02", "matrix-09"},
+        ),
+        ("#oa-status", "open", {"unicode", "matrix-00", "matrix-04", "matrix-08", "matrix-09"}),
+        ("#article-type", "review", {"unicode", "matrix-01", "matrix-04", "matrix-07"}),
+    )
+    for selector, value, expected_uids in scenarios:
+        page.locator(selector).select_option(value)
+        expect(page.locator("#result-count")).to_have_text(str(len(expected_uids)))
+        assert _visible_uids(page) == expected_uids
+        page.locator("#clear-filters").click()
+        expect(page.locator("#result-count")).to_have_text("32")
+
+    page.locator('[data-tag="baw"]').check()
+    baw_uids = {
+        "malicious",
+        "unicode",
+        "matrix-00",
+        "matrix-03",
+        "matrix-05",
+        "matrix-07",
+        "matrix-09",
+    }
+    expect(page.locator("#result-count")).to_have_text(str(len(baw_uids)))
+    assert _visible_uids(page) == baw_uids
+    page.locator("#clear-filters").click()
+
+    page.locator("#journal").select_option("ieee-tu")
+    page.locator("#article-type").select_option("research")
+    page.locator("#oa-status").select_option("closed")
+    page.locator('[data-tag="saw"]').check()
+    expect(page.locator("#result-count")).to_have_text("1")
+    assert _visible_uids(page) == {"matrix-03"}
 
 
 def test_desktop_filters_pagination_clear_and_real_history(page: Page, site_url: str) -> None:
@@ -67,33 +108,36 @@ def test_desktop_filters_pagination_clear_and_real_history(page: Page, site_url:
     expect(page.locator('[aria-current="page"]')).to_have_text("2")
     assert _query(page)["page"] == ["2"]
 
-    page.locator("#search").fill("Paper")
+    page.locator("#search").fill("Matrix")
     page.locator("#journal").select_option("ieee-tu")
     page.locator("#oa-status").select_option("closed")
     page.locator('[data-tag="baw"]').check()
+    page.locator("#article-type").select_option("research")
     page.locator("#sort").select_option("oldest")
     page.wait_for_function("document.querySelector('#result-count').textContent !== '32'")
     query = _query(page)
-    assert query["q"] == ["Paper"]
+    assert query["q"] == ["Matrix"]
     assert query["journal"] == ["ieee-tu"]
     assert query["oa"] == ["closed"]
     assert query["tag"] == ["baw"]
+    assert query["type"] == ["research"]
     assert query["sort"] == ["oldest"]
     assert "page" not in query
-    assert int(page.locator("#result-count").inner_text()) >= 1
+    expect(page.locator("#result-count")).to_have_text("1")
+    assert _visible_uids(page) == {"matrix-03"}
 
     page.locator("#clear-filters").click()
     expect(page.locator("#result-count")).to_have_text("32")
     assert urlparse(page.url).query == ""
     expect(page.locator("#active-filter-count")).to_have_text("0")
 
-    page.evaluate("history.pushState(null, '', '?q=Paper+01')")
-    page.evaluate("history.pushState(null, '', '?q=Paper+02')")
+    page.evaluate("history.pushState(null, '', '?q=Filler+01')")
+    page.evaluate("history.pushState(null, '', '?q=Filler+02')")
     page.go_back()
-    expect(page.locator("#search")).to_have_value("Paper 01")
+    expect(page.locator("#search")).to_have_value("Filler 01")
     expect(page.locator("#result-count")).to_have_text("1")
     page.go_forward()
-    expect(page.locator("#search")).to_have_value("Paper 02")
+    expect(page.locator("#search")).to_have_value("Filler 02")
     expect(page.locator("#result-count")).to_have_text("1")
 
 
