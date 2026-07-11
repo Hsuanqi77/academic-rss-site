@@ -117,6 +117,38 @@ def test_readme_accurately_describes_automation_timing_and_current_deployment() 
     assert "本 README 不填写尚不存在的 URL" not in readme
 
 
+def test_readme_documents_guide_generation_and_full_reclassification() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "8 个一级方向",
+        "56 个精细标签",
+        "一级方向只用于组织“说明”",
+        "精细标签是论文实际的自动分类和筛选单位",
+        "`topics.yml` 是标签与关键词的唯一来源",
+        "全部已存论文",
+        "304 未修改",
+        "没有新论文",
+        "同一个事务",
+        "完整单词边界",
+        "连字符、Unicode 破折号和连续空白",
+        "上下文门槛",
+        "自动标签仅供初步筛选",
+        "可能漏标或误标",
+        "不是编辑或人工标注结论",
+        "`feeds.yml` 是 RSS 来源的唯一来源",
+        "不要手工编辑 `<!-- GUIDE:START -->` 和 `<!-- GUIDE:END -->` 之间的内容",
+        "CI 和发布检查会拦截说明区与配置不同步",
+    ):
+        assert phrase in readme
+
+    for command in (
+        ".\\.venv\\Scripts\\python.exe scripts/render_site_guide.py",
+        ".\\.venv\\Scripts\\python.exe scripts/render_site_guide.py --check",
+    ):
+        assert command in readme
+
+
 def test_production_guide_is_generated_from_release_configuration() -> None:
     feeds = load_feeds(ROOT / "feeds.yml")
     catalog = load_topic_catalog(ROOT / "topics.yml")
