@@ -142,11 +142,12 @@ def test_readme_documents_guide_generation_and_full_reclassification() -> None:
     ):
         assert phrase in readme
 
+    command_lines = {line.strip() for line in readme.splitlines()}
     for command in (
         ".\\.venv\\Scripts\\python.exe scripts/render_site_guide.py",
         ".\\.venv\\Scripts\\python.exe scripts/render_site_guide.py --check",
     ):
-        assert command in readme
+        assert command in command_lines
 
 
 def test_production_guide_is_generated_from_release_configuration() -> None:

@@ -105,6 +105,25 @@ def test_daily_workflow_restores_then_updates_and_limits_change_scope() -> None:
     assert "set -euo pipefail" in update["run"]
 
 
+def test_daily_workflow_checks_guide_sync_before_any_database_update() -> None:
+    _, parsed = _load()
+    steps = _steps(_job(parsed))
+    names = [step["name"] for step in steps]
+
+    install_at = names.index("Install application")
+    guide_check_at = names.index("Check Guide configuration sync")
+    restore_at = names.index("Restore incremental working database")
+    update_at = names.index("Update RSS database")
+    commit_at = names.index("Commit database update")
+    assert install_at < guide_check_at < restore_at < update_at < commit_at
+
+    guide_check = steps[guide_check_at]
+    assert guide_check["run"].splitlines() == [
+        "set -euo pipefail",
+        "python scripts/render_site_guide.py --check",
+    ]
+
+
 def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> None:
     _, parsed = _load()
     job = _job(parsed)
