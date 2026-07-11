@@ -147,6 +147,10 @@ a { color: inherit; }
 .pagination { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0; }
 .pagination button { min-width: 42px; min-height: 42px; background: var(--panel); border: 1px solid var(--line-strong); }
 .pagination button[aria-current="page"] { background: var(--ink); color: #fff; }
+.pagination button:disabled { cursor: not-allowed; opacity: .45; }
+.pagination-ellipsis { display: inline-grid; min-width: 26px; place-items: center; color: var(--muted); }
+.empty-state { margin: 0; padding: 30px 22px; border: 1px dashed var(--line-strong); color: var(--muted); background: var(--panel); }
+.status.empty { background: #f3ead8; border-color: var(--copper); }
 
 .info-section { width: min(1500px, 100%); margin: 0 auto; padding: 38px clamp(16px, 4vw, 56px); border-top: 1px solid var(--line-strong); }
 .info-section h2 { margin: 0; font: 700 clamp(1.7rem, 3vw, 2.6rem)/1.1 var(--editorial); }
