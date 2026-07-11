@@ -100,6 +100,7 @@ topics:
 - 每个 topic 至少包含一个非空关键词；
 - `requires_any_group` 可省略；如存在，必须是非空且不重复的有效 group id 列表，不得包含 topic 自己所属的 group；
 - 同一 topic 内不允许规范化后重复的关键词；
+- 规范化后等价的连字符/空格变体只保存一个 canonical 关键词，由匹配器覆盖其他写法；
 - 不允许未知字段、重复 YAML key 或空字符串。
 
 ## 5. 一级方向、精细标签与关键词
@@ -113,7 +114,7 @@ topics:
 | BAW | `bulk acoustic wave`; `bulk acoustic resonator`; `BAW resonator`; `BAW filter` |
 | SAW | `surface acoustic wave`; `surface acoustic resonator`; `SAW resonator`; `SAW filter` |
 | FBAR | `film bulk acoustic resonator`; `thin-film bulk acoustic resonator`; `FBAR`; `FBAR filter` |
-| Lamb wave | `Lamb wave`; `Lamb-wave resonator`; `Lamb wave resonator`; `LWR`; `contour-mode resonator` |
+| Lamb wave | `Lamb wave`; `Lamb wave resonator`; `LWR`; `contour-mode resonator` |
 | Acoustic resonator | `acoustic resonator`; `piezoelectric resonator`; `acoustic filter`; `resonator filter` |
 | RF & Microwave | `radio frequency`; `RF front-end`; `RF filter`; `microwave`; `millimeter wave`; `millimetre wave`; `mmWave` |
 | Multiplexer | `duplexer`; `multiplexer`; `diplexer`; `filter bank`; `frequency multiplexer` |
@@ -151,8 +152,8 @@ topics:
 
 | 精细标签 | 英文关键词 |
 |---|---|
-| MEMS | `microelectromechanical system`; `micro-electromechanical system`; `MEMS device`; `MEMS resonator`; `MEMS sensor` |
-| NEMS | `nanoelectromechanical system`; `nano-electromechanical system`; `NEMS device`; `NEMS resonator` |
+| MEMS | `microelectromechanical system`; `MEMS device`; `MEMS resonator`; `MEMS sensor` |
+| NEMS | `nanoelectromechanical system`; `NEMS device`; `NEMS resonator` |
 | Microfabrication | `microfabrication`; `micromachining`; `surface micromachining`; `bulk micromachining`; `deep reactive ion etching` |
 | Wafer integration | `wafer bonding`; `wafer-level packaging`; `through-silicon via`; `TSV integration`; `heterogeneous integration` |
 | CMOS integration | `CMOS-compatible`; `CMOS integration`; `monolithic integration`; `back-end-of-line`; `BEOL integration` |

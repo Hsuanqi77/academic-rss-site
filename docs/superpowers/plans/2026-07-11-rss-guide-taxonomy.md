@@ -51,6 +51,7 @@ Do not modify:
 - Do not edit `docs/data/papers.db` by hand. The first successful cloud workflow produces the only publication database commit.
 - Every task follows RED → GREEN → focused regression → commit.
 - After each implementation task, run specification review before code-quality review; do not continue with open Critical or Important findings.
+- Store only one canonical keyword for dash/space-normalized equivalents; the matcher covers equivalent separator spellings.
 
 ### Task 1: Add the validated grouped topic catalog
 

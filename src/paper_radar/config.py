@@ -10,11 +10,15 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
+from paper_radar.matching import normalize_match_separators
+
 
 VALID_PUBLISHERS = {"nature", "aip", "ieee", "wiley"}
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$", re.IGNORECASE)
 _FEED_FIELDS = frozenset({"id", "name", "publisher", "feed_url", "enabled", "aliases"})
-_TOPIC_FIELDS = frozenset({"id", "label", "keywords"})
+_TOPIC_CATALOG_FIELDS = frozenset({"topic_groups", "topics"})
+_TOPIC_GROUP_FIELDS = frozenset({"id", "label", "order"})
+_TOPIC_FIELDS = frozenset({"id", "label", "keywords", "group", "requires_any_group"})
 
 
 class ConfigError(ValueError):
@@ -58,10 +62,25 @@ class FeedConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TopicGroupConfig:
+    id: str
+    label: str
+    order: int
+
+
+@dataclass(frozen=True, slots=True)
 class TopicConfig:
     id: str
     label: str
     keywords: tuple[str, ...]
+    group: str
+    requires_any_group: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TopicCatalog:
+    groups: tuple[TopicGroupConfig, ...]
+    topics: tuple[TopicConfig, ...]
 
 
 def load_feeds(path: Path) -> list[FeedConfig]:
@@ -119,20 +138,66 @@ def load_feeds(path: Path) -> list[FeedConfig]:
 
 
 def load_topics(path: Path) -> list[TopicConfig]:
-    rows = _load_rows(path, "topics")
-    topics: list[TopicConfig] = []
-    seen_ids: set[str] = set()
+    return list(load_topic_catalog(path).topics)
 
-    for index, row in enumerate(rows, start=1):
+
+def load_topic_catalog(path: Path) -> TopicCatalog:
+    document = _load_document(path)
+    _reject_unknown_fields(document, _TOPIC_CATALOG_FIELDS, "topic catalog")
+    group_rows = _document_rows(document, "topic_groups")
+    topic_rows = _document_rows(document, "topics")
+
+    groups: list[TopicGroupConfig] = []
+    seen_group_ids: set[str] = set()
+    seen_group_labels: set[str] = set()
+    seen_orders: set[int] = set()
+    for index, row in enumerate(group_rows, start=1):
+        if not isinstance(row, Mapping):
+            raise ConfigError(f"topic group row {index} must be a mapping")
+
+        group_id = _required_text(row, "id", f"topic group row {index}")
+        _reject_unknown_fields(row, _TOPIC_GROUP_FIELDS, f"topic group {group_id}")
+        if group_id in seen_group_ids:
+            raise ConfigError(f"duplicate topic group id: {group_id}")
+
+        label = _required_text(row, "label", f"topic group {group_id}")
+        if label in seen_group_labels:
+            raise ConfigError(f"duplicate topic group label: {label}")
+        order = row.get("order")
+        if isinstance(order, bool) or not isinstance(order, int) or order <= 0:
+            raise ConfigError(f"topic group {group_id} order must be a positive integer")
+        if order in seen_orders:
+            raise ConfigError(f"duplicate topic group order: {order}")
+
+        groups.append(TopicGroupConfig(id=group_id, label=label, order=order))
+        seen_group_ids.add(group_id)
+        seen_group_labels.add(label)
+        seen_orders.add(order)
+
+    expected_orders = list(range(1, len(groups) + 1))
+    if sorted(seen_orders) != expected_orders:
+        raise ConfigError(f"topic group order must be continuous from 1 to {len(groups)}")
+
+    topics: list[TopicConfig] = []
+    seen_topic_ids: set[str] = set()
+    seen_topic_labels: set[str] = set()
+    populated_groups: set[str] = set()
+
+    for index, row in enumerate(topic_rows, start=1):
         if not isinstance(row, Mapping):
             raise ConfigError(f"topic row {index} must be a mapping")
 
         topic_id = _required_text(row, "id", f"topic row {index}")
         _reject_unknown_fields(row, _TOPIC_FIELDS, f"topic {topic_id}")
-        if topic_id in seen_ids:
+        if topic_id in seen_topic_ids:
             raise ConfigError(f"duplicate topic id: {topic_id}")
 
         label = _required_text(row, "label", f"topic {topic_id}")
+        if label in seen_topic_labels:
+            raise ConfigError(f"duplicate topic label: {label}")
+        group = _required_text(row, "group", f"topic {topic_id}")
+        if group not in seen_group_ids:
+            raise ConfigError(f"topic {topic_id} references unknown group: {group}")
         raw_keywords = row.get("keywords")
         if not isinstance(raw_keywords, list):
             raise ConfigError(f"topic {topic_id} must define keywords")
@@ -146,13 +211,61 @@ def load_topics(path: Path) -> list[TopicConfig]:
         if len(keywords) != len(raw_keywords):
             raise ConfigError(f"topic {topic_id} keywords must be nonblank strings")
 
-        topics.append(TopicConfig(id=topic_id, label=label, keywords=keywords))
-        seen_ids.add(topic_id)
+        normalized_keywords = [normalize_match_separators(keyword) for keyword in keywords]
+        if len(set(normalized_keywords)) != len(normalized_keywords):
+            raise ConfigError(f"topic {topic_id} has duplicate normalized keyword")
 
-    return topics
+        requires_any_group: tuple[str, ...] = ()
+        if "requires_any_group" in row:
+            requires_any_group = _text_tuple(
+                row["requires_any_group"], f"topic {topic_id} requires_any_group"
+            )
+            if not requires_any_group:
+                raise ConfigError(
+                    f"topic {topic_id} requires_any_group must be a non-empty list when provided"
+                )
+            if len(set(requires_any_group)) != len(requires_any_group):
+                raise ConfigError(f"topic {topic_id} requires_any_group contains duplicates")
+            unknown_groups = set(requires_any_group) - seen_group_ids
+            if unknown_groups:
+                unknown_group = next(
+                    candidate for candidate in requires_any_group if candidate in unknown_groups
+                )
+                raise ConfigError(
+                    f"topic {topic_id} requires_any_group references unknown group: {unknown_group}"
+                )
+            if group in requires_any_group:
+                raise ConfigError(
+                    f"topic {topic_id} requires_any_group cannot contain its own group"
+                )
+
+        topics.append(
+            TopicConfig(
+                id=topic_id,
+                label=label,
+                keywords=keywords,
+                group=group,
+                requires_any_group=requires_any_group,
+            )
+        )
+        seen_topic_ids.add(topic_id)
+        seen_topic_labels.add(label)
+        populated_groups.add(group)
+
+    empty_groups = seen_group_ids - populated_groups
+    if empty_groups:
+        empty_group = next(group.id for group in groups if group.id in empty_groups)
+        raise ConfigError(f"topic group has no topics: {empty_group}")
+
+    return TopicCatalog(groups=tuple(groups), topics=tuple(topics))
 
 
 def _load_rows(path: Path, key: str) -> list[Any]:
+    document = _load_document(path)
+    return _document_rows(document, key)
+
+
+def _load_document(path: Path) -> Mapping[str, Any]:
     try:
         document = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
@@ -160,7 +273,10 @@ def _load_rows(path: Path, key: str) -> list[Any]:
 
     if not isinstance(document, Mapping):
         raise ConfigError("configuration root must be a mapping")
+    return document
 
+
+def _document_rows(document: Mapping[str, Any], key: str) -> list[Any]:
     rows = document.get(key)
     if not isinstance(rows, list) or not rows:
         raise ConfigError(f"{key} must be a non-empty list")

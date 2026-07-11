@@ -37,7 +37,12 @@ def _feed(feed_id: str, *, enabled: bool = True, host: str = "example.test") -> 
 
 
 def _topic(topic_id: str = "saw") -> TopicConfig:
-    return TopicConfig(id=topic_id, label=topic_id.upper(), keywords=("SAW",))
+    return TopicConfig(
+        id=topic_id,
+        label=topic_id.upper(),
+        keywords=("SAW",),
+        group="acoustic-rf",
+    )
 
 
 def _rss(*items: tuple[str, str]) -> bytes:

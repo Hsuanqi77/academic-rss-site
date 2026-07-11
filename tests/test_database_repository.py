@@ -79,7 +79,12 @@ def article(**changes: object) -> ArticleRecord:
 
 
 def topic(topic_id: str, label: str) -> TopicConfig:
-    return TopicConfig(id=topic_id, label=label, keywords=(label.lower(),))
+    return TopicConfig(
+        id=topic_id,
+        label=label,
+        keywords=(label.lower(),),
+        group="acoustic-rf",
+    )
 
 
 def register_default_journal(connection: sqlite3.Connection) -> None:

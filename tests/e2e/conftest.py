@@ -82,9 +82,18 @@ def published_site(tmp_path_factory: pytest.TempPathFactory) -> PublishedSite:
             register_journal(connection, feed)
 
         topics = {
-            "baw": TopicConfig("baw", "Bulk acoustic wave", ("BAW",)),
-            "saw": TopicConfig("saw", "Surface acoustic wave", ("SAW",)),
-            "ultrasound": TopicConfig("ultrasound", "Ultrasound", ("ultrasound",)),
+            "baw": TopicConfig(
+                "baw", "Bulk acoustic wave", ("BAW",), group="acoustic-rf"
+            ),
+            "saw": TopicConfig(
+                "saw", "Surface acoustic wave", ("SAW",), group="acoustic-rf"
+            ),
+            "ultrasound": TopicConfig(
+                "ultrasound",
+                "Ultrasound",
+                ("ultrasound",),
+                group="ultrasound-sensing",
+            ),
         }
         records: list[tuple[ArticleRecord, tuple[str, ...]]] = [
             (

@@ -1,43 +1,248 @@
+topic_groups:
+  - {id: acoustic-rf, label: 声学与射频器件, order: 1}
+  - {id: piezo-ferroelectric, label: 压电与铁电薄膜, order: 2}
+  - {id: ultrasound-sensing, label: 超声换能器与声学传感, order: 3}
+  - {id: mems-nems, label: MEMS/NEMS 与微纳制造, order: 4}
+  - {id: electronic-semiconductor, label: 电子与半导体器件, order: 5}
+  - {id: ai-computational, label: 人工智能与计算设计, order: 6}
+  - {id: characterization-reliability, label: 材料表征与器件可靠性, order: 7}
+  - {id: emerging-cross-disciplinary, label: 新兴交叉方向, order: 8}
+
 topics:
   - id: baw
     label: BAW
-    keywords: [bulk acoustic wave, BAW]
+    group: acoustic-rf
+    keywords: [bulk acoustic wave, bulk acoustic resonator, BAW resonator, BAW filter]
   - id: saw
     label: SAW
-    keywords: [surface acoustic wave, SAW]
+    group: acoustic-rf
+    keywords: [surface acoustic wave, surface acoustic resonator, SAW resonator, SAW filter]
   - id: fbar
     label: FBAR
-    keywords: [film bulk acoustic resonator, FBAR]
-  - id: mems
-    label: MEMS
-    keywords: [microelectromechanical, MEMS]
-  - id: aln
-    label: AlN
-    keywords: [aluminum nitride, aluminium nitride, AlN]
-  - id: alscn
-    label: AlScN
-    keywords: [aluminum scandium nitride, aluminium scandium nitride, AlScN]
-  - id: piezoelectric
-    label: Piezoelectric
-    keywords: [piezoelectric, piezoelectricity]
-  - id: ultrasound
-    label: Ultrasound
-    keywords: [ultrasound, ultrasonic]
+    group: acoustic-rf
+    keywords: [film bulk acoustic resonator, thin-film bulk acoustic resonator, FBAR, FBAR filter]
+  - id: lamb-wave
+    label: Lamb wave
+    group: acoustic-rf
+    keywords: [Lamb wave, Lamb wave resonator, LWR, contour-mode resonator]
   - id: acoustic-resonator
     label: Acoustic resonator
-    keywords: [acoustic resonator, acoustic filter]
-  - id: microwave
-    label: Microwave
-    keywords: [microwave, millimeter wave, millimetre wave]
-  - id: rf
-    label: RF
-    keywords: [radio frequency, radio-frequency, RF]
+    group: acoustic-rf
+    keywords: [acoustic resonator, piezoelectric resonator, acoustic filter, resonator filter]
+  - id: rf-microwave
+    label: RF & Microwave
+    group: acoustic-rf
+    keywords: [radio frequency, RF front-end, RF filter, microwave, millimeter wave, millimetre wave, mmWave]
+  - id: multiplexer
+    label: Multiplexer
+    group: acoustic-rf
+    keywords: [duplexer, multiplexer, diplexer, filter bank, frequency multiplexer]
+
+  - id: piezoelectric
+    label: Piezoelectric
+    group: piezo-ferroelectric
+    keywords: [piezoelectric, piezoelectricity, piezoelectric coefficient, piezoelectric thin film]
   - id: ferroelectric
     label: Ferroelectric
-    keywords: [ferroelectric, ferroelectricity]
-  - id: semiconductor
-    label: Semiconductor
-    keywords: [semiconductor, semiconducting]
-  - id: electron-device
-    label: Electron device
-    keywords: [electron device, transistor, diode]
+    group: piezo-ferroelectric
+    keywords: [ferroelectric, ferroelectricity, ferroelectric thin film, ferroelectric polarization]
+  - id: aln
+    label: AlN
+    group: piezo-ferroelectric
+    keywords: [aluminum nitride, aluminium nitride, AlN thin film, AlN piezoelectric]
+  - id: alscn
+    label: AlScN
+    group: piezo-ferroelectric
+    keywords: [aluminum scandium nitride, aluminium scandium nitride, scandium-doped AlN, ScAlN, AlScN]
+  - id: pzt
+    label: PZT
+    group: piezo-ferroelectric
+    keywords: [lead zirconate titanate, PZT thin film, PZT piezoelectric]
+  - id: linbo3
+    label: LiNbO3
+    group: piezo-ferroelectric
+    keywords: [lithium niobate, LiNbO3, thin-film lithium niobate, LNOI]
+  - id: hfo2-hzo
+    label: HfO2/HZO
+    group: piezo-ferroelectric
+    keywords: [ferroelectric hafnium oxide, hafnium zirconium oxide, HfO2 ferroelectric, HZO ferroelectric]
+  - id: lead-free-piezoelectrics
+    label: Lead-free piezoelectrics
+    group: piezo-ferroelectric
+    keywords: [lead-free piezoelectric, potassium sodium niobate, KNN, barium titanate, BaTiO3]
+  - id: film-growth
+    label: Film growth
+    group: piezo-ferroelectric
+    keywords: [reactive sputtering, magnetron sputtering, MOCVD, atomic layer deposition, pulsed laser deposition, sol-gel deposition, epitaxial growth]
+
+  - id: pmut
+    label: PMUT
+    group: ultrasound-sensing
+    keywords: [piezoelectric micromachined ultrasonic transducer, piezoelectric micromachined ultrasound transducer, PMUT, PMUT array]
+  - id: cmut
+    label: CMUT
+    group: ultrasound-sensing
+    keywords: [capacitive micromachined ultrasonic transducer, capacitive micromachined ultrasound transducer, CMUT, CMUT array]
+  - id: ultrasonic-transducer
+    label: Ultrasonic transducer
+    group: ultrasound-sensing
+    keywords: [ultrasonic transducer, ultrasound transducer, piezoelectric transducer, high-frequency transducer]
+  - id: ultrasound-imaging
+    label: Ultrasound imaging
+    group: ultrasound-sensing
+    keywords: [ultrasound imaging, ultrasonic imaging, medical ultrasound, high-frequency ultrasound, photoacoustic imaging]
+  - id: therapeutic-ultrasound
+    label: Therapeutic ultrasound
+    group: ultrasound-sensing
+    keywords: [therapeutic ultrasound, focused ultrasound, high-intensity focused ultrasound, HIFU]
+  - id: acoustic-sensing
+    label: Acoustic sensing
+    group: ultrasound-sensing
+    keywords: [acoustic sensor, ultrasonic sensor, acoustic sensing, ultrasonic sensing, non-destructive testing, nondestructive evaluation]
+
+  - id: mems
+    label: MEMS
+    group: mems-nems
+    keywords: [microelectromechanical system, MEMS device, MEMS resonator, MEMS sensor]
+  - id: nems
+    label: NEMS
+    group: mems-nems
+    keywords: [nanoelectromechanical system, NEMS device, NEMS resonator]
+  - id: microfabrication
+    label: Microfabrication
+    group: mems-nems
+    keywords: [microfabrication, micromachining, surface micromachining, bulk micromachining, deep reactive ion etching]
+  - id: wafer-integration
+    label: Wafer integration
+    group: mems-nems
+    keywords: [wafer bonding, wafer-level packaging, through-silicon via, TSV integration, heterogeneous integration]
+  - id: cmos-integration
+    label: CMOS integration
+    group: mems-nems
+    keywords: [CMOS-compatible, CMOS integration, monolithic integration, back-end-of-line, BEOL integration]
+  - id: packaging
+    label: Packaging
+    group: mems-nems
+    keywords: [MEMS packaging, hermetic packaging, vacuum packaging, chip-scale packaging]
+
+  - id: transistor
+    label: Transistor
+    group: electronic-semiconductor
+    keywords: [field-effect transistor, thin-film transistor, MOSFET, FinFET, GAAFET, TFET, HEMT]
+  - id: ferroelectric-transistor
+    label: Ferroelectric transistor
+    group: electronic-semiconductor
+    keywords: [ferroelectric field-effect transistor, FeFET, negative capacitance transistor, NCFET]
+  - id: memory-memristor
+    label: Memory & Memristor
+    group: electronic-semiconductor
+    keywords: [nonvolatile memory, resistive random-access memory, RRAM, memristor, ferroelectric memory, neuromorphic device]
+  - id: power-electronics
+    label: Power electronics
+    group: electronic-semiconductor
+    keywords: [power semiconductor, power transistor, power diode, high-voltage device, power electronic device]
+  - id: wide-bandgap-devices
+    label: Wide-bandgap devices
+    group: electronic-semiconductor
+    keywords: [gallium nitride device, GaN transistor, GaN HEMT, silicon carbide device, SiC MOSFET, ultra-wide-bandgap semiconductor]
+  - id: 2d-electronics
+    label: 2D electronics
+    group: electronic-semiconductor
+    keywords: [two-dimensional transistor, 2D semiconductor, MoS2 transistor, transition metal dichalcogenide, van der Waals device]
+  - id: sensors
+    label: Sensors
+    group: electronic-semiconductor
+    keywords: [electronic sensor, chemical sensor, gas sensor, pressure sensor, biosensor, strain sensor]
+
+  - id: machine-learning
+    label: Machine learning
+    group: ai-computational
+    keywords: [machine learning, deep learning, neural network, convolutional neural network, recurrent neural network]
+  - id: transformer-llm
+    label: Transformer & LLM
+    group: ai-computational
+    keywords: [transformer model, large language model, foundation model, generative artificial intelligence, generative AI]
+  - id: inverse-design
+    label: Inverse design
+    group: ai-computational
+    keywords: [inverse design, topology optimization, generative design, computational design optimization]
+  - id: surrogate-modelling
+    label: Surrogate modelling
+    group: ai-computational
+    keywords: [surrogate model, reduced-order model, Bayesian optimization, Gaussian process regression]
+  - id: physics-informed-ai
+    label: Physics-informed AI
+    group: ai-computational
+    keywords: [physics-informed neural network, physics-informed machine learning, PINN, neural operator]
+  - id: materials-informatics
+    label: Materials informatics
+    group: ai-computational
+    keywords: [materials informatics, materials discovery, machine-learning interatomic potential, property prediction]
+  - id: autonomous-research
+    label: Autonomous research
+    group: ai-computational
+    keywords: [autonomous experiment, self-driving laboratory, automated experimentation, active learning, robotic laboratory]
+  - id: digital-twin
+    label: Digital twin
+    group: ai-computational
+    keywords: [digital twin, virtual sensor, data-driven modelling, predictive maintenance]
+
+  - id: xray-characterization
+    label: X-ray characterization
+    group: characterization-reliability
+    requires_any_group: &context_groups [acoustic-rf, piezo-ferroelectric, ultrasound-sensing, mems-nems, electronic-semiconductor, ai-computational, emerging-cross-disciplinary]
+    keywords: [x-ray diffraction, XRD, reciprocal space mapping, RSM, rocking curve, omega scan]
+  - id: electron-microscopy
+    label: Electron microscopy
+    group: characterization-reliability
+    requires_any_group: *context_groups
+    keywords: [scanning electron microscopy, SEM, transmission electron microscopy, TEM, STEM]
+  - id: probe-microscopy
+    label: Probe microscopy
+    group: characterization-reliability
+    requires_any_group: *context_groups
+    keywords: [atomic force microscopy, AFM, piezoresponse force microscopy, PFM, Kelvin probe force microscopy]
+  - id: spectroscopy
+    label: Spectroscopy
+    group: characterization-reliability
+    requires_any_group: *context_groups
+    keywords: [x-ray photoelectron spectroscopy, XPS, Raman spectroscopy, secondary ion mass spectrometry, SIMS]
+  - id: crystal-quality
+    label: Crystal quality
+    group: characterization-reliability
+    requires_any_group: *context_groups
+    keywords: [crystal orientation, c-axis texture, mosaicity, residual stress, dislocation density, full width at half maximum]
+  - id: reliability
+    label: Reliability
+    group: characterization-reliability
+    requires_any_group: *context_groups
+    keywords: [device reliability, fatigue endurance, breakdown field, time-dependent dielectric breakdown, aging, thermal stability, frequency drift]
+
+  - id: phononics
+    label: Phononics
+    group: emerging-cross-disciplinary
+    keywords: [phononics, phononic crystal, phononic bandgap, acoustic metamaterial, topological acoustics]
+  - id: quantum-acoustics
+    label: Quantum acoustics
+    group: emerging-cross-disciplinary
+    keywords: [quantum acoustics, quantum acoustic, phonon qubit, single phonon, microwave-to-acoustic conversion]
+  - id: optomechanics
+    label: Optomechanics
+    group: emerging-cross-disciplinary
+    keywords: [cavity optomechanics, optomechanical resonator, acousto-optic interaction, microwave-to-optical conversion]
+  - id: acoustofluidics
+    label: Acoustofluidics
+    group: emerging-cross-disciplinary
+    keywords: [acoustofluidics, acoustic microfluidics, surface acoustic wave microfluidics, acoustic particle manipulation]
+  - id: energy-harvesting
+    label: Energy harvesting
+    group: emerging-cross-disciplinary
+    keywords: [piezoelectric energy harvesting, piezoelectric energy harvester, vibration energy harvesting, triboelectric generator]
+  - id: flexible-devices
+    label: Flexible devices
+    group: emerging-cross-disciplinary
+    keywords: [flexible electronics, stretchable electronics, wearable sensor, flexible piezoelectric, bio-integrated electronics]
+  - id: nonreciprocal-acoustics
+    label: Nonreciprocal acoustics
+    group: emerging-cross-disciplinary
+    keywords: [nonreciprocal acoustics, non-reciprocal acoustic, acoustic isolator, acoustic circulator]

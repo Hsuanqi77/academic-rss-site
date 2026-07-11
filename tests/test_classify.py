@@ -28,7 +28,12 @@ def _article(*, title: str, abstract: str | None = None) -> ArticleRecord:
 
 
 def _topic(topic_id: str, *keywords: str) -> TopicConfig:
-    return TopicConfig(id=topic_id, label=topic_id.upper(), keywords=keywords)
+    return TopicConfig(
+        id=topic_id,
+        label=topic_id.upper(),
+        keywords=keywords,
+        group="acoustic-rf",
+    )
 
 
 def test_classify_matches_phrase_without_matching_unrelated_acronym() -> None:
@@ -47,12 +52,21 @@ def test_classify_acronyms_require_token_boundaries_but_allow_hyphens() -> None:
     assert classify_article(_article(title="The RF response"), [rf]) == [rf]
 
 
-def test_classify_real_rf_topic_matches_hyphenated_compound_continuations() -> None:
-    rf = next(topic for topic in load_topics(PROJECT_ROOT / "topics.yml") if topic.id == "rf")
+def test_classify_real_rf_microwave_topic_uses_approved_catalog_entry() -> None:
+    rf = next(
+        topic for topic in load_topics(PROJECT_ROOT / "topics.yml") if topic.id == "rf-microwave"
+    )
 
-    assert rf.keywords == ("radio frequency", "radio-frequency", "RF")
-    assert classify_article(_article(title="radio-frequency-response"), [rf]) == [rf]
-    assert classify_article(_article(title="radio-frequency-filter design"), [rf]) == [rf]
+    assert rf.keywords == (
+        "radio frequency",
+        "RF front-end",
+        "RF filter",
+        "microwave",
+        "millimeter wave",
+        "millimetre wave",
+        "mmWave",
+    )
+    assert classify_article(_article(title="radio frequency response"), [rf]) == [rf]
 
 
 def test_classify_unicode_dash_keyword_matches_dash_compound_continuation() -> None:
