@@ -236,7 +236,15 @@ def list_articles(connection: sqlite3.Connection) -> tuple[ArticleRecord, ...]:
     """Return every persisted article in stable UID order."""
 
     rows = connection.execute("SELECT * FROM articles ORDER BY uid").fetchall()
-    return tuple(_article_from_row(row) for row in rows)
+    records: list[ArticleRecord] = []
+    for row in rows:
+        try:
+            records.append(_article_from_row(row))
+        except RepositoryConflictError as error:
+            raise RepositoryConflictError(
+                f"stored article {row['uid']} is corrupt: {error}"
+            ) from error
+    return tuple(records)
 
 
 def _article_from_row(row: sqlite3.Row) -> ArticleRecord:

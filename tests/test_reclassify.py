@@ -15,7 +15,7 @@ from paper_radar.database import (
     upsert_article,
 )
 from paper_radar.models import ArticleRecord, ClassificationSummary
-from paper_radar.reclassify import reclassify_all_articles
+from paper_radar.reclassify import ReclassificationError, reclassify_all_articles
 
 
 @pytest.fixture
@@ -115,6 +115,39 @@ def test_reclassify_is_idempotent(connection: sqlite3.Connection) -> None:
 
     assert first == second
     assert links(connection) == {(matching.uid, "baw")}
+
+
+def test_reclassify_deduplicates_identical_topic_ids_before_reporting_summary(
+    connection: sqlite3.Connection,
+) -> None:
+    record = article("url:one", "Bulk acoustic wave resonator")
+    assert upsert_article(connection, record) == "inserted"
+    repeated = topic("baw", "BAW", "bulk acoustic wave")
+
+    summary = reclassify_all_articles(connection, (repeated, repeated))
+
+    assert summary == ClassificationSummary(1, 1, 1, 1)
+    assert connection.execute("SELECT COUNT(*) FROM article_tags").fetchone()[0] == 1
+    assert links(connection) == {(record.uid, "baw")}
+
+
+def test_reclassify_rejects_conflicting_duplicate_id_without_changing_old_links(
+    connection: sqlite3.Connection,
+) -> None:
+    record = article("url:one", "Bulk acoustic wave resonator")
+    assert upsert_article(connection, record) == "inserted"
+    replace_article_tags(connection, record.uid, [topic("old", "Old", "old")])
+
+    with pytest.raises(RepositoryConflictError, match="conflicting labels.*baw"):
+        reclassify_all_articles(
+            connection,
+            (
+                topic("baw", "BAW", "bulk acoustic wave"),
+                topic("baw", "Bulk acoustic", "bulk acoustic wave"),
+            ),
+        )
+
+    assert links(connection) == {(record.uid, "old")}
 
 
 def test_reclassify_empty_database(connection: sqlite3.Connection) -> None:
@@ -225,9 +258,11 @@ def test_classification_error_does_not_change_database(
         raise RuntimeError("classification failed")
 
     monkeypatch.setattr("paper_radar.reclassify.classify_article", fail)
-    with pytest.raises(RuntimeError, match="classification failed"):
+    with pytest.raises(ReclassificationError, match="url:one") as captured:
         reclassify_all_articles(connection, ())
 
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert str(captured.value.__cause__) == "classification failed"
     assert links(connection) == {(record.uid, "existing")}
 
 

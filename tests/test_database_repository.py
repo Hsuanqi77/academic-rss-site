@@ -1535,8 +1535,11 @@ def test_list_articles_rejects_corrupt_stored_authors(connection: sqlite3.Connec
     )
     connection.commit()
 
-    with pytest.raises(RepositoryConflictError, match="authors.*strings"):
+    with pytest.raises(RepositoryConflictError, match=f"{record.uid}.*authors.*strings") as captured:
         list_articles(connection)
+
+    assert isinstance(captured.value.__cause__, RepositoryConflictError)
+    assert "authors must contain only strings" in str(captured.value.__cause__)
 
 
 @pytest.mark.parametrize(
