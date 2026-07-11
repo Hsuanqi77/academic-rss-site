@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -27,12 +28,16 @@ def _job(parsed: dict[str, object]) -> dict[str, object]:
     return job
 
 
-def _steps(job: dict[str, object]) -> list[dict[str, str]]:
+def _raw_steps(job: dict[str, object]) -> list[dict[str, object]]:
     raw_steps = job["steps"]
     assert isinstance(raw_steps, list)
+    assert all(isinstance(step, dict) for step in raw_steps)
+    return raw_steps
+
+
+def _steps(job: dict[str, object]) -> list[dict[str, str]]:
     steps: list[dict[str, str]] = []
-    for raw_step in raw_steps:
-        assert isinstance(raw_step, dict)
+    for raw_step in _raw_steps(job):
         steps.append({str(key): str(value) for key, value in raw_step.items()})
     return steps
 
@@ -81,6 +86,7 @@ def test_daily_workflow_restores_then_updates_and_limits_change_scope() -> None:
     assert "mkdir -p data" in runs
     assert "python -m pip install ." in runs
     assert 'tee "$RUNNER_TEMP/update-result.json"' in runs
+    assert "git diff --name-only HEAD --" in runs
     assert "grep -vFx 'docs/data/papers.db'" in runs
     assert "git add -- docs/data/papers.db" in runs
     assert "git diff --cached --quiet" in runs
@@ -90,10 +96,15 @@ def test_daily_workflow_restores_then_updates_and_limits_change_scope() -> None:
     assert "--force" not in runs
     assert "git add ." not in runs
 
+    by_name = {step["name"]: step for step in steps if "name" in step}
+    update = by_name["Update RSS database"]
+    assert "set -euo pipefail" in update["run"]
+
 
 def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> None:
     _, parsed = _load()
-    steps = _steps(_job(parsed))
+    job = _job(parsed)
+    steps = _steps(job)
     by_name = {step["name"]: step for step in steps if "name" in step}
     detect = by_name["Detect database change"]
     commit = by_name["Commit database update"]
@@ -105,7 +116,43 @@ def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> 
     assert "if" not in pages
     assert "gh api --method POST" in pages["run"]
     assert "repos/${GITHUB_REPOSITORY}/pages/builds" in pages["run"]
-    assert pages["env"] == "{'GH_TOKEN': '${{ github.token }}'}"
+
+    raw_by_name = {step["name"]: step for step in _raw_steps(job) if "name" in step}
+    assert raw_by_name["Request GitHub Pages build"]["env"] == {
+        "GH_TOKEN": "${{ github.token }}"
+    }
+
+
+def test_head_diff_enumerates_staged_unexpected_tracked_file(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test Bot"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test-bot@users.noreply.github.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    database = tmp_path / "docs" / "data" / "papers.db"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"initial database")
+    unexpected = tmp_path / "README.md"
+    unexpected.write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "docs/data/papers.db", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=tmp_path, check=True)
+
+    unexpected.write_text("staged unexpected change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "README.md"], cwd=tmp_path, check=True)
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    changed = result.stdout.splitlines()
+    rejected = [path for path in changed if path != "docs/data/papers.db"]
+    assert changed == ["README.md"]
+    assert rejected == ["README.md"]
 
 
 def test_daily_workflow_has_no_personal_token_or_hardcoded_email() -> None:

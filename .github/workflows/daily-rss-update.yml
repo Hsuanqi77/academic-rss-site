@@ -52,7 +52,7 @@ jobs:
       - name: Reject unexpected tracked changes
         run: |
           set -euo pipefail
-          unexpected="$(git diff --name-only | grep -vFx 'docs/data/papers.db' || true)"
+          unexpected="$(git diff --name-only HEAD -- | grep -vFx 'docs/data/papers.db' || true)"
           if [[ -n "$unexpected" ]]; then
             echo "Unexpected tracked changes:" >&2
             echo "$unexpected" >&2
