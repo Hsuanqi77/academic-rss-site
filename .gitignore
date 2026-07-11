@@ -1,6 +1,8 @@
 .superpowers/
 .worktrees/
 .env
+.env.*
+!.env.example
 .venv/
 *.egg-info/
 __pycache__/
@@ -9,6 +11,10 @@ __pycache__/
 .ruff_cache/
 work/
 outputs/
+*.log
+*.bak
+*.backup
+*.db.*
 
 # Local ingestion databases and SQLite sidecars
 data/*.db
@@ -20,10 +26,6 @@ data/*.tmp
 # The validated publication snapshot is intentionally versioned; transient files are not.
 docs/data/*
 !docs/data/papers.db
-docs/data/*.tmp
-docs/data/*.db-wal
-docs/data/*.db-shm
-docs/data/*.db-journal
 
 # Browser and JavaScript test artifacts
 node_modules/

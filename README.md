@@ -8,10 +8,10 @@ Paper Radar 是一个供个人使用的多出版社学术 RSS 聚合网站。Pyt
 
 ## 1. Windows 首次安装
 
-需要 Python 3.11 或更高版本。打开 PowerShell，在项目目录运行：
+运行时需要 Python 3.11 或更高版本。可先用 `py -0p` 查看 Windows Python Launcher 已发现的解释器；下面的 `py -3` 会选择已安装的 Python 3，请再用虚拟环境中的 `python --version` 确认版本不低于 3.11。打开 PowerShell，在项目目录运行：
 
 ```powershell
-py -3.11 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env
@@ -33,13 +33,14 @@ UNPAYWALL_EMAIL=your-name@example.com
 
 命令依次执行：读取配置 → 抓取官方 RSS → 规范化、去重和打标签 → 写入本地 `data/papers.db` → 完整性校验 → 原子更新 `docs/data/papers.db`。只有 schema、外键、运行状态和文章数量安全闸门全部通过时，公开快照才会被替换。
 
-终端最后输出一行 JSON：
+终端最后输出一行 JSON。`command`、`publish_allowed`、`validation` 和 `publication` 位于顶层，抓取统计位于顶层 `result` 对象内：
 
-- `status: ok`：所有启用来源均成功；
-- `status: partial`：部分来源失败，但其余来源成功，失败来源保留旧数据；校验通过时允许发布；
-- `status: error`：没有可安全发布的结果，命令退出且不会覆盖旧快照；
-- `inserted / updated / skipped / failed`：新增、更新、无变化和失败条数；
-- `successful_feeds / failed_feeds`：本轮来源结果。
+- `result.status` 为 `ok`：所有启用来源均成功；
+- `result.status` 为 `partial`：部分来源失败，但其余来源成功，失败来源保留旧数据；校验通过时允许发布；
+- `result.status` 为 `error`：没有可安全发布的结果，命令退出且不会覆盖旧快照；
+- `result.inserted`、`result.updated`、`result.skipped`、`result.failed`：新增、更新、无变化和失败条数；
+- `result.successful_feeds`、`result.failed_feeds`：本轮来源结果；
+- `publish_allowed`：顶层安全发布判定；只有 `true` 才表示本轮已通过发布闸门。
 
 建议连续运行两轮。第一轮确认四类出版社至少各有一个来源成功；第二轮应以 `skipped` 或 HTTP 未修改为主，并确认没有重复 DOI。
 
