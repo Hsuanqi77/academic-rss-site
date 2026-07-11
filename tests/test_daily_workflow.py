@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "daily-rss-update.yml"
+CHECKOUT_SHA = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+SETUP_PYTHON_SHA = "ece7cb06caefa5fff74198d8649806c4678c61a1"
+
+
+def _load() -> tuple[str, dict[str, object]]:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    parsed = yaml.load(text, Loader=yaml.BaseLoader)
+    assert isinstance(parsed, dict)
+    return text, parsed
+
+
+def _job(parsed: dict[str, object]) -> dict[str, object]:
+    jobs = parsed["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["update"]
+    assert isinstance(job, dict)
+    return job
+
+
+def _steps(job: dict[str, object]) -> list[dict[str, str]]:
+    raw_steps = job["steps"]
+    assert isinstance(raw_steps, list)
+    steps: list[dict[str, str]] = []
+    for raw_step in raw_steps:
+        assert isinstance(raw_step, dict)
+        steps.append({str(key): str(value) for key, value in raw_step.items()})
+    return steps
+
+
+def test_daily_workflow_has_exact_triggers_permissions_and_concurrency() -> None:
+    _, parsed = _load()
+    triggers = parsed["on"]
+    assert isinstance(triggers, dict)
+    schedule = triggers["schedule"]
+    assert schedule == [{"cron": "0 0 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert parsed["permissions"] == {"contents": "write", "pages": "write"}
+    assert parsed["concurrency"] == {
+        "group": "daily-rss-update",
+        "cancel-in-progress": "false",
+    }
+    job = _job(parsed)
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["timeout-minutes"] == "30"
+
+
+def test_daily_workflow_pins_actions_and_uses_optional_unpaywall_secret() -> None:
+    text, parsed = _load()
+    job = _job(parsed)
+    steps = _steps(job)
+    uses = [step["uses"] for step in steps if "uses" in step]
+    assert uses == [
+        f"actions/checkout@{CHECKOUT_SHA}",
+        f"actions/setup-python@{SETUP_PYTHON_SHA}",
+    ]
+    assert "fetch-depth: 0" in text
+    assert "python-version: '3.12'" in text
+    assert job["env"] == {"UNPAYWALL_EMAIL": "${{ secrets.UNPAYWALL_EMAIL }}"}
+    assert "@main" not in text
+    assert not re.search(r"uses:\s+[^\s]+@(v?\d+(?:\.\d+)*)\s*$", text, re.MULTILINE)
+
+
+def test_daily_workflow_restores_then_updates_and_limits_change_scope() -> None:
+    text, parsed = _load()
+    steps = _steps(_job(parsed))
+    runs = "\n".join(step.get("run", "") for step in steps)
+    restore_at = runs.index("cp docs/data/papers.db data/papers.db")
+    update_at = runs.index("python -m paper_radar update")
+    scope_at = runs.index("git diff --name-only")
+    assert restore_at < update_at < scope_at
+    assert "mkdir -p data" in runs
+    assert "python -m pip install ." in runs
+    assert 'tee "$RUNNER_TEMP/update-result.json"' in runs
+    assert "grep -vFx 'docs/data/papers.db'" in runs
+    assert "git add -- docs/data/papers.db" in runs
+    assert "git diff --cached --quiet" in runs
+    assert 'git commit -m "chore(data): daily RSS update"' in runs
+    assert "git pull --rebase origin main" in runs
+    assert "git push origin HEAD:main" in runs
+    assert "--force" not in runs
+    assert "git add ." not in runs
+
+
+def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> None:
+    _, parsed = _load()
+    steps = _steps(_job(parsed))
+    by_name = {step["name"]: step for step in steps if "name" in step}
+    detect = by_name["Detect database change"]
+    commit = by_name["Commit database update"]
+    pages = by_name["Request GitHub Pages build"]
+    assert detect["id"] == "changes"
+    assert "database_changed=false" in detect["run"]
+    assert "database_changed=true" in detect["run"]
+    assert commit["if"] == "steps.changes.outputs.database_changed == 'true'"
+    assert "if" not in pages
+    assert "gh api --method POST" in pages["run"]
+    assert "repos/${GITHUB_REPOSITORY}/pages/builds" in pages["run"]
+    assert pages["env"] == "{'GH_TOKEN': '${{ github.token }}'}"
+
+
+def test_daily_workflow_has_no_personal_token_or_hardcoded_email() -> None:
+    text, _ = _load()
+    lowered = text.lower()
+    assert "personal_access_token" not in lowered
+    assert "github_pat" not in lowered
+    assert "@example." not in lowered
+    assert "@gmail." not in lowered
+    assert "@qq." not in lowered
+    assert "secrets.unpaywall_email" in lowered
+    assert "github.token" in lowered

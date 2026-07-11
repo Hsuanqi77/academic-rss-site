@@ -1,0 +1,103 @@
+name: Daily RSS Update
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: daily-rss-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install application
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Restore incremental working database
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          cp docs/data/papers.db data/papers.db
+
+      - name: Update RSS database
+        run: |
+          set -euo pipefail
+          python -m paper_radar update | tee "$RUNNER_TEMP/update-result.json"
+
+      - name: Reject unexpected tracked changes
+        run: |
+          set -euo pipefail
+          unexpected="$(git diff --name-only | grep -vFx 'docs/data/papers.db' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "Unexpected tracked changes:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+
+      - name: Detect database change
+        id: changes
+        run: |
+          if git diff --quiet -- docs/data/papers.db; then
+            echo "database_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "database_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write update summary
+        run: |
+          {
+            echo "### Daily RSS update"
+            echo "- Trigger: $GITHUB_EVENT_NAME"
+            echo "- Database changed: ${{ steps.changes.outputs.database_changed }}"
+            echo "- Result:"
+            echo '```json'
+            cat "$RUNNER_TEMP/update-result.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit database update
+        if: steps.changes.outputs.database_changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- docs/data/papers.db
+          if git diff --cached --quiet; then
+            echo "No staged database change; skipping commit."
+            exit 0
+          fi
+          git commit -m "chore(data): daily RSS update"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Request GitHub Pages build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/pages/builds"
