@@ -9,3 +9,24 @@ __pycache__/
 .ruff_cache/
 work/
 outputs/
+
+# Local ingestion databases and SQLite sidecars
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/*.tmp
+
+# The validated publication snapshot is intentionally versioned; transient files are not.
+docs/data/*
+!docs/data/papers.db
+docs/data/*.tmp
+docs/data/*.db-wal
+docs/data/*.db-shm
+docs/data/*.db-journal
+
+# Browser and JavaScript test artifacts
+node_modules/
+playwright-report/
+test-results/
+.playwright/

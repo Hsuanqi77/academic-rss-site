@@ -56,6 +56,9 @@ def published_site(tmp_path_factory: pytest.TempPathFactory) -> PublishedSite:
     shutil.copytree(REPOSITORY_ROOT / "docs", site_root)
     working = workspace / "working.db"
     published = site_root / "data" / "papers.db"
+    # The fixture publishes its own small orthogonal database. A real repository snapshot may
+    # already be present in docs/, so remove only the temporary copy before exercising publish.
+    published.unlink(missing_ok=True)
 
     connection = connect_database(working)
     try:
