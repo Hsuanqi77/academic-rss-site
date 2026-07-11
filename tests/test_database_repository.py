@@ -21,6 +21,7 @@ from paper_radar.database import (
     finish_run,
     get_article,
     get_feed_state,
+    list_articles,
     mark_journal_status,
     register_journal,
     replace_article_tags,
@@ -98,6 +99,7 @@ def test_repository_api_is_importable() -> None:
             utc_now,
             register_journal,
             get_article,
+            list_articles,
             get_feed_state,
             mark_journal_status,
             upsert_article,
@@ -1507,6 +1509,34 @@ def test_replace_article_tags_rolls_back_all_changes_on_label_update_failure(
 def test_replace_article_tags_rejects_missing_article(connection: sqlite3.Connection) -> None:
     with pytest.raises(RepositoryNotFoundError, match="missing"):
         replace_article_tags(connection, "missing", [topic("acoustics", "Acoustics")])
+
+
+def test_list_articles_returns_records_in_stable_uid_order(
+    connection: sqlite3.Connection,
+) -> None:
+    register_default_journal(connection)
+    second = article(uid="url:z-last", normalized_url="https://example.com/z-last")
+    first = article(uid="url:a-first", normalized_url="https://example.com/a-first")
+    assert upsert_article(connection, second) == "inserted"
+    assert upsert_article(connection, first) == "inserted"
+
+    records = list_articles(connection)
+
+    assert records == (first, second)
+
+
+def test_list_articles_rejects_corrupt_stored_authors(connection: sqlite3.Connection) -> None:
+    register_default_journal(connection)
+    record = article()
+    assert upsert_article(connection, record) == "inserted"
+    connection.execute(
+        "UPDATE articles SET authors_json = ? WHERE uid = ?",
+        (json.dumps(["Valid", 17]), record.uid),
+    )
+    connection.commit()
+
+    with pytest.raises(RepositoryConflictError, match="authors.*strings"):
+        list_articles(connection)
 
 
 @pytest.mark.parametrize(

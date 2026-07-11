@@ -108,6 +108,14 @@ class ArticleRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassificationSummary:
+    articles_scanned: int
+    articles_tagged: int
+    tag_assignments: int
+    active_tags: int
+
+
+@dataclass(frozen=True, slots=True)
 class RawFeedItem:
     feed_id: str
     feed_url: str

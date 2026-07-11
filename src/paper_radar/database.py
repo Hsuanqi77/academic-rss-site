@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from itertools import count
@@ -229,6 +229,19 @@ def get_article(connection: sqlite3.Connection, uid: str) -> ArticleRecord | Non
     row = connection.execute("SELECT * FROM articles WHERE uid = ?", (uid,)).fetchone()
     if row is None:
         return None
+    return _article_from_row(row)
+
+
+def list_articles(connection: sqlite3.Connection) -> tuple[ArticleRecord, ...]:
+    """Return every persisted article in stable UID order."""
+
+    rows = connection.execute("SELECT * FROM articles ORDER BY uid").fetchall()
+    return tuple(_article_from_row(row) for row in rows)
+
+
+def _article_from_row(row: sqlite3.Row) -> ArticleRecord:
+    """Convert a stored article row while rejecting corrupt serialized fields."""
+
     authors = _authors_from_json(row["authors_json"])
     if any(not isinstance(author, str) for author in authors):
         raise RepositoryConflictError("stored authors must contain only strings")
@@ -254,20 +267,7 @@ def get_article(connection: sqlite3.Connection, uid: str) -> ArticleRecord | Non
 def replace_article_tags(
     connection: sqlite3.Connection, article_uid: str, topics: Iterable[TopicConfig]
 ) -> None:
-    topics_by_id: dict[str, TopicConfig] = {}
-    topic_id_by_label: dict[str, str] = {}
-    for current_topic in topics:
-        previous = topics_by_id.get(current_topic.id)
-        if previous is not None and previous.label != current_topic.label:
-            raise RepositoryConflictError(f"conflicting labels supplied for tag {current_topic.id}")
-        previous_id = topic_id_by_label.get(current_topic.label)
-        if previous_id is not None and previous_id != current_topic.id:
-            raise RepositoryConflictError(
-                f"duplicate tag label {current_topic.label!r} supplied for "
-                f"{previous_id} and {current_topic.id}"
-            )
-        topics_by_id[current_topic.id] = current_topic
-        topic_id_by_label[current_topic.label] = current_topic.id
+    topics_by_id = _validated_topics(topics)
 
     with _atomic(connection):
         if not _row_exists(connection, "articles", article_uid):
@@ -288,6 +288,81 @@ def replace_article_tags(
             )
             """
         )
+
+
+def replace_all_article_tags(
+    connection: sqlite3.Connection,
+    assignments: Mapping[str, Iterable[TopicConfig]],
+) -> None:
+    """Replace every article-tag relationship in one atomic operation.
+
+    Assignment keys must exactly match the persisted article UIDs. This guard
+    prevents a partial classifier result from accidentally clearing unrelated
+    articles.
+    """
+
+    with _atomic(connection):
+        topics_by_article: dict[str, dict[str, TopicConfig]] = {}
+        all_topics: list[TopicConfig] = []
+        for article_uid, article_topics in assignments.items():
+            validated = _validated_topics(article_topics)
+            topics_by_article[article_uid] = validated
+            all_topics.extend(validated.values())
+        topics_by_id = _validated_topics(all_topics)
+
+        stored_uids = {
+            row["uid"] for row in connection.execute("SELECT uid FROM articles")
+        }
+        supplied_uids = set(topics_by_article)
+        unknown_uids = supplied_uids - stored_uids
+        omitted_uids = stored_uids - supplied_uids
+        if unknown_uids:
+            raise RepositoryNotFoundError(
+                "unknown article assignment uid(s): " + ", ".join(sorted(unknown_uids))
+            )
+        if omitted_uids:
+            raise RepositoryConflictError(
+                "missing or omitted article assignment uid(s): "
+                + ", ".join(sorted(omitted_uids))
+            )
+
+        connection.execute("DELETE FROM article_tags")
+        for current_topic in topics_by_id.values():
+            _upsert_or_migrate_tag(connection, current_topic)
+        connection.executemany(
+            "INSERT INTO article_tags (article_uid, tag_id) VALUES (?, ?)",
+            (
+                (article_uid, topic_id)
+                for article_uid, article_topics in topics_by_article.items()
+                for topic_id in article_topics
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM tags
+            WHERE NOT EXISTS (
+                SELECT 1 FROM article_tags WHERE article_tags.tag_id = tags.id
+            )
+            """
+        )
+
+
+def _validated_topics(topics: Iterable[TopicConfig]) -> dict[str, TopicConfig]:
+    topics_by_id: dict[str, TopicConfig] = {}
+    topic_id_by_label: dict[str, str] = {}
+    for current_topic in topics:
+        previous = topics_by_id.get(current_topic.id)
+        if previous is not None and previous.label != current_topic.label:
+            raise RepositoryConflictError(f"conflicting labels supplied for tag {current_topic.id}")
+        previous_id = topic_id_by_label.get(current_topic.label)
+        if previous_id is not None and previous_id != current_topic.id:
+            raise RepositoryConflictError(
+                f"duplicate tag label {current_topic.label!r} supplied for "
+                f"{previous_id} and {current_topic.id}"
+            )
+        topics_by_id[current_topic.id] = current_topic
+        topic_id_by_label[current_topic.label] = current_topic.id
+    return topics_by_id
 
 
 def create_run(connection: sqlite3.Connection) -> int:
