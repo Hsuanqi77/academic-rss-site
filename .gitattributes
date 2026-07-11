@@ -1,0 +1,4 @@
+# Keep vendored and generated publication assets byte-identical on every platform.
+docs/sql-wasm.js -text
+docs/sql-wasm.wasm binary
+docs/data/papers.db binary
