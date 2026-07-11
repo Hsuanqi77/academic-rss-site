@@ -24,6 +24,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Set up Python
@@ -69,15 +70,20 @@ jobs:
           fi
 
       - name: Write update summary
+        if: ${{ always() }}
         run: |
           {
             echo "### Daily RSS update"
             echo "- Trigger: $GITHUB_EVENT_NAME"
             echo "- Database changed: ${{ steps.changes.outputs.database_changed }}"
-            echo "- Result:"
-            echo '```json'
-            cat "$RUNNER_TEMP/update-result.json"
-            echo '```'
+            if [[ -f "$RUNNER_TEMP/update-result.json" ]]; then
+              echo "- Result:"
+              echo '```json'
+              cat "$RUNNER_TEMP/update-result.json"
+              echo '```'
+            else
+              echo "- Result: Update failed before producing a result."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit database update

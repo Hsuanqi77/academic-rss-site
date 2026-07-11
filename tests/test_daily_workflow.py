@@ -68,7 +68,11 @@ def test_daily_workflow_pins_actions_and_uses_optional_unpaywall_secret() -> Non
         f"actions/checkout@{CHECKOUT_SHA}",
         f"actions/setup-python@{SETUP_PYTHON_SHA}",
     ]
-    assert "fetch-depth: 0" in text
+    raw_by_name = {step["name"]: step for step in _raw_steps(job) if "name" in step}
+    assert raw_by_name["Check out repository"]["with"] == {
+        "ref": "main",
+        "fetch-depth": "0",
+    }
     assert "python-version: '3.12'" in text
     assert job["env"] == {"UNPAYWALL_EMAIL": "${{ secrets.UNPAYWALL_EMAIL }}"}
     assert "@main" not in text
@@ -107,11 +111,15 @@ def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> 
     steps = _steps(job)
     by_name = {step["name"]: step for step in steps if "name" in step}
     detect = by_name["Detect database change"]
+    summary = by_name["Write update summary"]
     commit = by_name["Commit database update"]
     pages = by_name["Request GitHub Pages build"]
     assert detect["id"] == "changes"
     assert "database_changed=false" in detect["run"]
     assert "database_changed=true" in detect["run"]
+    assert summary["if"] == "${{ always() }}"
+    assert '[[ -f "$RUNNER_TEMP/update-result.json" ]]' in summary["run"]
+    assert "Update failed before producing a result." in summary["run"]
     assert commit["if"] == "steps.changes.outputs.database_changed == 'true'"
     assert "if" not in pages
     assert "gh api --method POST" in pages["run"]
