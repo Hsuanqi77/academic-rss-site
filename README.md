@@ -139,3 +139,10 @@ docs/data/papers.db       校验后、可提交的发布快照
 tests/                    Python、真实浏览器与独立 E2E 测试
 tests/web/                零构建 Node 测试
 ```
+
+## Production site
+
+- 网站：[Paper Radar](https://hsuanqi77.github.io/academic-rss-site/)
+- 源代码：[Hsuanqi77/academic-rss-site](https://github.com/Hsuanqi77/academic-rss-site)
+
+生产站点由 GitHub Pages 从 `main` 分支的 `/docs` 目录发布。首次上线验收已确认：764 篇论文可加载，筛选状态可通过 URL 恢复，390 px 移动筛选抽屉可用，WASM 与 SQLite 数据库资源均正常返回。
