@@ -139,6 +139,8 @@ def test_readme_documents_guide_generation_and_full_reclassification() -> None:
         "`feeds.yml` 是 RSS 来源的唯一来源",
         "不要手工编辑 `<!-- GUIDE:START -->` 和 `<!-- GUIDE:END -->` 之间的内容",
         "CI 和发布检查会拦截说明区与配置不同步",
+        "Guide Sync Check 会在 push 和 pull request 时执行",
+        "Daily RSS Update 也会在更新数据库前重复该检查",
     ):
         assert phrase in readme
 

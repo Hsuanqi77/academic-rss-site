@@ -27,6 +27,12 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Capture initial repository commit
+        id: baseline
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -93,6 +99,8 @@ jobs:
 
       - name: Commit database update
         if: steps.changes.outputs.database_changed == 'true'
+        env:
+          INITIAL_HEAD: ${{ steps.baseline.outputs.sha }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -102,8 +110,13 @@ jobs:
             echo "No staged database change; skipping commit."
             exit 0
           fi
+          git fetch --no-tags origin main
+          remote_head="$(git rev-parse FETCH_HEAD)"
+          if [[ "$remote_head" != "$INITIAL_HEAD" ]]; then
+            echo "origin/main changed during this run; refusing to publish stale database." >&2
+            exit 1
+          fi
           git commit -m "chore(data): daily RSS update"
-          git pull --rebase origin main
           git push origin HEAD:main
 
       - name: Request GitHub Pages build

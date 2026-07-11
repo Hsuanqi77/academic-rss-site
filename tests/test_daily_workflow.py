@@ -95,8 +95,9 @@ def test_daily_workflow_restores_then_updates_and_limits_change_scope() -> None:
     assert "git add -- docs/data/papers.db" in runs
     assert "git diff --cached --quiet" in runs
     assert 'git commit -m "chore(data): daily RSS update"' in runs
-    assert "git pull --rebase origin main" in runs
     assert "git push origin HEAD:main" in runs
+    assert "git pull" not in runs
+    assert "rebase" not in runs
     assert "--force" not in runs
     assert "git add ." not in runs
 
@@ -122,6 +123,46 @@ def test_daily_workflow_checks_guide_sync_before_any_database_update() -> None:
         "set -euo pipefail",
         "python scripts/render_site_guide.py --check",
     ]
+
+
+def test_daily_workflow_rejects_remote_movement_before_database_commit() -> None:
+    _, parsed = _load()
+    job = _job(parsed)
+    steps = _steps(job)
+    names = [step["name"] for step in steps]
+    by_name = {step["name"]: step for step in steps}
+
+    checkout_at = names.index("Check out repository")
+    baseline_at = names.index("Capture initial repository commit")
+    update_at = names.index("Update RSS database")
+    commit_at = names.index("Commit database update")
+    assert checkout_at < baseline_at < update_at < commit_at
+
+    baseline = by_name["Capture initial repository commit"]
+    assert baseline["id"] == "baseline"
+    assert baseline["run"].splitlines() == [
+        "set -euo pipefail",
+        'echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"',
+    ]
+
+    raw_by_name = {step["name"]: step for step in _raw_steps(job) if "name" in step}
+    raw_commit = raw_by_name["Commit database update"]
+    assert raw_commit["env"] == {"INITIAL_HEAD": "${{ steps.baseline.outputs.sha }}"}
+
+    commit_run = by_name["Commit database update"]["run"]
+    fetch_at = commit_run.index("git fetch --no-tags origin main")
+    remote_at = commit_run.index('remote_head="$(git rev-parse FETCH_HEAD)"')
+    compare_at = commit_run.index('if [[ "$remote_head" != "$INITIAL_HEAD" ]]; then')
+    database_commit_at = commit_run.index('git commit -m "chore(data): daily RSS update"')
+    push_at = commit_run.index("git push origin HEAD:main")
+    assert fetch_at < remote_at < compare_at < database_commit_at < push_at
+    assert "refusing to publish stale database" in commit_run
+    assert "exit 1" in commit_run
+    assert "git pull" not in commit_run
+    assert "rebase" not in commit_run
+    assert "--force" not in commit_run
+    assert "retry" not in commit_run.lower()
+    assert commit_run.splitlines()[-1] == "git push origin HEAD:main"
 
 
 def test_daily_workflow_skips_empty_commit_and_always_requests_pages_build() -> None:

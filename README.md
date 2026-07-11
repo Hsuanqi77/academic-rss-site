@@ -117,7 +117,7 @@ node --test tests/web/*.test.mjs
    .\.venv\Scripts\python.exe scripts/render_site_guide.py --check
    ```
 
-4. 运行第 5 节的全部测试，并将 YAML 与生成后的 `docs/index.html` 放在同一次人工提交中。CI 和发布检查会拦截说明区与配置不同步。
+4. 运行第 5 节的全部测试，并将 YAML 与生成后的 `docs/index.html` 放在同一次人工提交中。CI 和发布检查会拦截说明区与配置不同步：独立的 Guide Sync Check 会在 push 和 pull request 时执行，Daily RSS Update 也会在更新数据库前重复该检查。
 
 不要手工编辑 `<!-- GUIDE:START -->` 和 `<!-- GUIDE:END -->` 之间的内容；该区域完全由 `feeds.yml` 和 `topics.yml` 生成，手工更改会在下次生成时被覆盖。
 
