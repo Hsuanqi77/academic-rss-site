@@ -21,7 +21,7 @@
     <nav aria-label="主导航">
       <a href="#papers">最新论文</a>
       <a href="#data-status">数据状态</a>
-      <a href="#about">关于</a>
+      <a href="#guide">说明</a>
     </nav>
     <button id="open-filters" class="filter-toggle" type="button" aria-controls="filters" aria-expanded="false">
       <span aria-hidden="true">☷</span> 筛选 <span id="active-filter-count" class="badge" aria-label="已启用筛选数">0</span>
@@ -91,10 +91,395 @@
     <p class="eyebrow">SYSTEM / 02</p><h2 id="data-title">数据状态</h2>
     <p id="database-summary">数据库尚未加载。更新完成后将在此显示采集时间与来源状态。</p>
   </section>
-  <section id="about" class="info-section" aria-labelledby="about-title" data-drawer-background>
-    <p class="eyebrow">NOTES / 03</p><h2 id="about-title">关于</h2>
-    <p>本站聚合公开的期刊 RSS 元数据，用于个人科研信息追踪。文章版权归原出版商所有。</p>
+  <!-- GUIDE:START -->
+<section id="guide" class="info-section guide-section" aria-labelledby="guide-title" data-drawer-background>
+  <p class="eyebrow">GUIDE / 03</p><h2 id="guide-title">说明</h2>
+  <p>GitHub 云端每天北京时间 08:00 计划触发更新，繁忙时可能延迟；不需要打开 Codex 或保持本地电脑开机。本站聚合公开 RSS 元数据，自动标签只用于初步筛选，不能替代人工分类。</p>
+  <div class="guide-stats" aria-label="运行与配置摘要">
+    <span class="guide-stat"><strong>08:00</strong> 北京时间计划更新</span>
+    <span class="guide-stat"><strong>20</strong> SOURCES</span>
+    <span class="guide-stat"><strong>8</strong> DIRECTIONS</span>
+    <span class="guide-stat"><strong>GitHub Actions</strong> 云端运行</span>
+  </div>
+  <section class="guide-subsection" aria-labelledby="guide-feeds-title">
+    <div class="guide-subheading"><h3 id="guide-feeds-title">每天检查的 RSS 列表</h3>
+      <span>20 SOURCES</span></div>
+    <div class="guide-grid guide-feed-groups">
+      <details class="guide-group" open>
+        <summary><span>Nature Portfolio</span><span>11 RSS</span></summary>
+        <div class="guide-group-content"><ul class="guide-feed-list">
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Communications</span>
+            <a class="guide-feed-url" href="https://www.nature.com/ncomms.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/ncomms.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Biotechnology</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nbt.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nbt.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Methods</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nmeth.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nmeth.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nature.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nature.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Cancer</span>
+            <a class="guide-feed-url" href="https://www.nature.com/natcancer.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/natcancer.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Machine Intelligence</span>
+            <a class="guide-feed-url" href="https://www.nature.com/natmachintell.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/natmachintell.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Computational Science</span>
+            <a class="guide-feed-url" href="https://www.nature.com/natcomputsci.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/natcomputsci.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Reviews Molecular Cell Biology</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nrm.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nrm.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Reviews Genetics</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nrg.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nrg.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Nature Reviews Cancer</span>
+            <a class="guide-feed-url" href="https://www.nature.com/nrc.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/nrc.rss</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Microsystems &amp; Nanoengineering</span>
+            <a class="guide-feed-url" href="https://www.nature.com/micronano.rss" target="_blank" rel="noopener noreferrer">https://www.nature.com/micronano.rss</a>
+          </li>
+        </ul></div>
+      </details>
+      <details class="guide-group">
+        <summary><span>IEEE</span><span>6 RSS</span></summary>
+        <div class="guide-group-content"><ul class="guide-feed-list">
+          <li class="guide-feed">
+            <span class="guide-feed-name">IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC11073821.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC11073821.XML</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">IEEE Transactions on Microwave Theory and Techniques</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC22.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC22.XML</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">IEEE Microwave and Wireless Technology Letters</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC9944983.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC9944983.XML</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">IEEE Transactions on Electron Devices</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC16.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC16.XML</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">IEEE Electron Device Letters</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC55.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC55.XML</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Journal of Microelectromechanical Systems</span>
+            <a class="guide-feed-url" href="https://ieeexplore.ieee.org/rss/TOC84.XML" target="_blank" rel="noopener noreferrer">https://ieeexplore.ieee.org/rss/TOC84.XML</a>
+          </li>
+        </ul></div>
+      </details>
+      <details class="guide-group">
+        <summary><span>AIP Publishing</span><span>1 RSS</span></summary>
+        <div class="guide-group-content"><ul class="guide-feed-list">
+          <li class="guide-feed">
+            <span class="guide-feed-name">Applied Physics Letters</span>
+            <a class="guide-feed-url" href="https://pubs.aip.org/rss/site_1000017/1000011.xml" target="_blank" rel="noopener noreferrer">https://pubs.aip.org/rss/site_1000017/1000011.xml</a>
+          </li>
+        </ul></div>
+      </details>
+      <details class="guide-group">
+        <summary><span>Wiley</span><span>2 RSS</span></summary>
+        <div class="guide-group-content"><ul class="guide-feed-list">
+          <li class="guide-feed">
+            <span class="guide-feed-name">Advanced Materials</span>
+            <a class="guide-feed-url" href="https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&amp;feed=rss&amp;jc=15214095" target="_blank" rel="noopener noreferrer">https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&amp;feed=rss&amp;jc=15214095</a>
+          </li>
+          <li class="guide-feed">
+            <span class="guide-feed-name">Advanced Functional Materials</span>
+            <a class="guide-feed-url" href="https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&amp;feed=rss&amp;jc=16163028" target="_blank" rel="noopener noreferrer">https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&amp;feed=rss&amp;jc=16163028</a>
+          </li>
+        </ul></div>
+      </details>
+    </div>
   </section>
+  <section class="guide-subsection" aria-labelledby="guide-topics-title">
+    <div class="guide-subheading"><h3 id="guide-topics-title">标签与关键词</h3>
+      <span>8 DIRECTIONS / 56 PRECISE TAGS</span></div>
+    <div class="guide-grid guide-topic-groups">
+      <details class="guide-group" open>
+        <summary><span>01 — 声学与射频器件</span><span>7 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">BAW</div>
+            <div class="guide-keywords">bulk acoustic wave · bulk acoustic resonator · BAW resonator · BAW filter</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">SAW</div>
+            <div class="guide-keywords">surface acoustic wave · surface acoustic resonator · SAW resonator · SAW filter</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">FBAR</div>
+            <div class="guide-keywords">film bulk acoustic resonator · thin-film bulk acoustic resonator · FBAR · FBAR filter</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Lamb wave</div>
+            <div class="guide-keywords">Lamb wave · Lamb wave resonator · LWR · contour-mode resonator</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Acoustic resonator</div>
+            <div class="guide-keywords">acoustic resonator · piezoelectric resonator · acoustic filter · resonator filter</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">RF &amp; Microwave</div>
+            <div class="guide-keywords">radio frequency · RF front-end · RF filter · microwave · millimeter wave · millimetre wave · mmWave</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Multiplexer</div>
+            <div class="guide-keywords">duplexer · multiplexer · diplexer · filter bank · frequency multiplexer</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>02 — 压电与铁电薄膜</span><span>9 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">Piezoelectric</div>
+            <div class="guide-keywords">piezoelectric · piezoelectricity · piezoelectric coefficient · piezoelectric thin film</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Ferroelectric</div>
+            <div class="guide-keywords">ferroelectric · ferroelectricity · ferroelectric thin film · ferroelectric polarization</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">AlN</div>
+            <div class="guide-keywords">aluminum nitride · aluminium nitride · AlN thin film · AlN piezoelectric</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">AlScN</div>
+            <div class="guide-keywords">aluminum scandium nitride · aluminium scandium nitride · scandium-doped AlN · ScAlN · AlScN</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">PZT</div>
+            <div class="guide-keywords">lead zirconate titanate · PZT thin film · PZT piezoelectric</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">LiNbO3</div>
+            <div class="guide-keywords">lithium niobate · LiNbO3 · thin-film lithium niobate · LNOI</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">HfO2/HZO</div>
+            <div class="guide-keywords">ferroelectric hafnium oxide · hafnium zirconium oxide · HfO2 ferroelectric · HZO ferroelectric</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Lead-free piezoelectrics</div>
+            <div class="guide-keywords">lead-free piezoelectric · potassium sodium niobate · KNN · barium titanate · BaTiO3</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Film growth</div>
+            <div class="guide-keywords">reactive sputtering · magnetron sputtering · MOCVD · atomic layer deposition · pulsed laser deposition · sol-gel deposition · epitaxial growth</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>03 — 超声换能器与声学传感</span><span>6 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">PMUT</div>
+            <div class="guide-keywords">piezoelectric micromachined ultrasonic transducer · piezoelectric micromachined ultrasound transducer · PMUT · PMUT array</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">CMUT</div>
+            <div class="guide-keywords">capacitive micromachined ultrasonic transducer · capacitive micromachined ultrasound transducer · CMUT · CMUT array</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Ultrasonic transducer</div>
+            <div class="guide-keywords">ultrasonic transducer · ultrasound transducer · piezoelectric transducer · high-frequency transducer</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Ultrasound imaging</div>
+            <div class="guide-keywords">ultrasound imaging · ultrasonic imaging · medical ultrasound · high-frequency ultrasound · photoacoustic imaging</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Therapeutic ultrasound</div>
+            <div class="guide-keywords">therapeutic ultrasound · focused ultrasound · high-intensity focused ultrasound · HIFU</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Acoustic sensing</div>
+            <div class="guide-keywords">acoustic sensor · ultrasonic sensor · acoustic sensing · ultrasonic sensing · non-destructive testing · nondestructive evaluation</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>04 — MEMS/NEMS 与微纳制造</span><span>6 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">MEMS</div>
+            <div class="guide-keywords">microelectromechanical system · MEMS device · MEMS resonator · MEMS sensor</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">NEMS</div>
+            <div class="guide-keywords">nanoelectromechanical system · NEMS device · NEMS resonator</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Microfabrication</div>
+            <div class="guide-keywords">microfabrication · micromachining · surface micromachining · bulk micromachining · deep reactive ion etching</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Wafer integration</div>
+            <div class="guide-keywords">wafer bonding · wafer-level packaging · through-silicon via · TSV integration · heterogeneous integration</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">CMOS integration</div>
+            <div class="guide-keywords">CMOS-compatible · CMOS integration · monolithic integration · back-end-of-line · BEOL integration</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Packaging</div>
+            <div class="guide-keywords">MEMS packaging · hermetic packaging · vacuum packaging · chip-scale packaging</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>05 — 电子与半导体器件</span><span>7 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">Transistor</div>
+            <div class="guide-keywords">field-effect transistor · thin-film transistor · MOSFET · FinFET · GAAFET · TFET · HEMT</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Ferroelectric transistor</div>
+            <div class="guide-keywords">ferroelectric field-effect transistor · FeFET · negative capacitance transistor · NCFET</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Memory &amp; Memristor</div>
+            <div class="guide-keywords">nonvolatile memory · resistive random-access memory · RRAM · memristor · ferroelectric memory · neuromorphic device</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Power electronics</div>
+            <div class="guide-keywords">power semiconductor · power transistor · power diode · high-voltage device · power electronic device</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Wide-bandgap devices</div>
+            <div class="guide-keywords">gallium nitride device · GaN transistor · GaN HEMT · silicon carbide device · SiC MOSFET · ultra-wide-bandgap semiconductor</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">2D electronics</div>
+            <div class="guide-keywords">two-dimensional transistor · 2D semiconductor · MoS2 transistor · transition metal dichalcogenide · van der Waals device</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Sensors</div>
+            <div class="guide-keywords">electronic sensor · chemical sensor · gas sensor · pressure sensor · biosensor · strain sensor</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>06 — 人工智能与计算设计</span><span>8 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">Machine learning</div>
+            <div class="guide-keywords">machine learning · deep learning · neural network · convolutional neural network · recurrent neural network</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Transformer &amp; LLM</div>
+            <div class="guide-keywords">transformer model · large language model · foundation model · generative artificial intelligence · generative AI</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Inverse design</div>
+            <div class="guide-keywords">inverse design · topology optimization · generative design · computational design optimization</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Surrogate modelling</div>
+            <div class="guide-keywords">surrogate model · reduced-order model · Bayesian optimization · Gaussian process regression</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Physics-informed AI</div>
+            <div class="guide-keywords">physics-informed neural network · physics-informed machine learning · PINN · neural operator</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Materials informatics</div>
+            <div class="guide-keywords">materials informatics · materials discovery · machine-learning interatomic potential · property prediction</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Autonomous research</div>
+            <div class="guide-keywords">autonomous experiment · self-driving laboratory · automated experimentation · active learning · robotic laboratory</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Digital twin</div>
+            <div class="guide-keywords">digital twin · virtual sensor · data-driven modelling · predictive maintenance</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>07 — 材料表征与器件可靠性</span><span>6 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">X-ray characterization</div>
+            <div class="guide-keywords">x-ray diffraction · XRD · reciprocal space mapping · RSM · rocking curve · omega scan</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Electron microscopy</div>
+            <div class="guide-keywords">scanning electron microscopy · SEM · transmission electron microscopy · TEM · STEM</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Probe microscopy</div>
+            <div class="guide-keywords">atomic force microscopy · AFM · piezoresponse force microscopy · PFM · Kelvin probe force microscopy</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Spectroscopy</div>
+            <div class="guide-keywords">x-ray photoelectron spectroscopy · XPS · Raman spectroscopy · secondary ion mass spectrometry · SIMS</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Crystal quality</div>
+            <div class="guide-keywords">crystal orientation · c-axis texture · mosaicity · residual stress · dislocation density · full width at half maximum</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Reliability</div>
+            <div class="guide-keywords">device reliability · fatigue endurance · breakdown field · time-dependent dielectric breakdown · aging · thermal stability · frequency drift</div>
+          </div>
+        </div>
+      </details>
+      <details class="guide-group">
+        <summary><span>08 — 新兴交叉方向</span><span>7 TAGS</span></summary>
+        <div class="guide-group-content guide-tag-list">
+          <div class="guide-tag">
+            <div class="guide-tag-name">Phononics</div>
+            <div class="guide-keywords">phononics · phononic crystal · phononic bandgap · acoustic metamaterial · topological acoustics</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Quantum acoustics</div>
+            <div class="guide-keywords">quantum acoustics · quantum acoustic · phonon qubit · single phonon · microwave-to-acoustic conversion</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Optomechanics</div>
+            <div class="guide-keywords">cavity optomechanics · optomechanical resonator · acousto-optic interaction · microwave-to-optical conversion</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Acoustofluidics</div>
+            <div class="guide-keywords">acoustofluidics · acoustic microfluidics · surface acoustic wave microfluidics · acoustic particle manipulation</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Energy harvesting</div>
+            <div class="guide-keywords">piezoelectric energy harvesting · piezoelectric energy harvester · vibration energy harvesting · triboelectric generator</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Flexible devices</div>
+            <div class="guide-keywords">flexible electronics · stretchable electronics · wearable sensor · flexible piezoelectric · bio-integrated electronics</div>
+          </div>
+          <div class="guide-tag">
+            <div class="guide-tag-name">Nonreciprocal acoustics</div>
+            <div class="guide-keywords">nonreciprocal acoustics · non-reciprocal acoustic · acoustic isolator · acoustic circulator</div>
+          </div>
+        </div>
+      </details>
+    </div>
+  </section>
+  <p class="guide-boundary">本站只聚合公开 RSS 元数据，文章版权归原出版商所有；OA 状态和自动标签可能不完整或误判。</p>
+</section>
+<!-- GUIDE:END -->
   <footer data-drawer-background><span>Paper Radar</span><span>PUBLICATION METADATA INSTRUMENT</span></footer>
 
   <script type="module" src="js/app.js"></script>
