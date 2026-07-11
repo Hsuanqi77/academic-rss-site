@@ -4,7 +4,7 @@ Paper Radar 是一个供个人使用的多出版社学术 RSS 聚合网站。Pyt
 
 当前配置收录 20 本期刊：Nature Portfolio 11 本、Applied Physics Letters、IEEE 6 本，以及 Wiley 的 Advanced Materials 和 Advanced Functional Materials。完整名称和官方 RSS 地址以 [`feeds.yml`](feeds.yml) 为准。
 
-> 本仓库只准备本地发布候选。尚未创建或推送 GitHub 仓库，也没有可填写的生产网站 URL。
+> 本仓库已经公开部署；当前生产网站和源代码仓库链接见文末 **Production site**。
 
 ## 1. Windows 首次安装
 
@@ -46,11 +46,11 @@ UNPAYWALL_EMAIL=your-name@example.com
 
 ## 3. 每日云端自动更新
 
-仓库通过 GitHub Actions 工作流 **Daily RSS Update**，每天北京时间 08:00 自动检查全部已启用 RSS。任务在 GitHub 的云端 runner 中执行，不需要打开 Codex，也不需要保持本地电脑开机或联网。
+仓库通过 GitHub Actions 工作流 **Daily RSS Update**，计划于每天北京时间 08:00（UTC 00:00）触发并检查全部已启用 RSS；GitHub 繁忙时可能延迟。任务在 GitHub 的云端 runner 中执行，不需要打开 Codex，也不需要保持本地电脑开机或联网。
 
 自动任务从当前 `docs/data/papers.db` 恢复增量工作数据库，沿用手动更新的抓取、校验和发布闸门。有数据变化时，GitHub Actions 机器人只提交 `docs/data/papers.db`；没有变化时不创建空提交。任务最后会显式请求 GitHub Pages 构建。
 
-手动补跑：打开仓库 **Actions → Daily RSS Update → Run workflow**。运行日志和 Job Summary 会显示新增、更新、跳过、失败来源以及是否产生数据库提交。
+手动补跑：打开仓库 **Actions → Daily RSS Update → Run workflow**。Job Summary 会显示抓取结果和数据库是否变化；工作流中 `Commit database update` 步骤的日志会显示提交与推送是否成功。
 
 Unpaywall 邮箱是可选项。如需启用，在仓库 **Settings → Secrets and variables → Actions** 添加名为 `UNPAYWALL_EMAIL` 的 Secret；不要把真实邮箱写进工作流、`.env.example`、其他公开文件或提交历史。未设置时 RSS 和 Crossref 更新仍会运行，无法确认的 OA 状态保持 `unknown`。
 
@@ -64,7 +64,7 @@ Unpaywall 邮箱是可选项。如需启用，在仓库 **Settings → Secrets a
 .\.venv\Scripts\python.exe -m http.server 8000 --directory docs
 ```
 
-浏览器打开 `http://localhost:8000`。不要直接双击 `index.html`，因为 `file://` 页面不能可靠加载 SQLite 和 WASM。页面“数据状态”显示当前发布快照的可检索文章数量；数据时间取决于最近一次手动更新，不是实时全文数据库。
+浏览器打开 `http://localhost:8000`。不要直接双击 `index.html`，因为 `file://` 页面不能可靠加载 SQLite 和 WASM。页面“数据状态”显示当前发布快照的可检索文章数量；数据时间取决于最近一次成功更新（自动或手动），不是实时全文数据库。
 
 ## 5. 运行全部测试
 
@@ -114,17 +114,17 @@ node --test tests/web/*.test.mjs
 3. 刷新页面后 URL 中的搜索、期刊、日期、类型、OA 和标签状态可恢复；
 4. 再次运行全部 Python、Node、Ruff 和浏览器测试。
 
-## 9. 手动发布到 GitHub Pages
+## 9. 首次自行部署或重新配置 GitHub Pages
 
-本地验收完成后，由仓库所有者自行执行外部发布：
+如果你 fork 或复用本项目，在本地验收完成后，可为自己的仓库首次部署或重新配置 GitHub Pages：
 
-1. 创建 GitHub 仓库并提交代码及 `docs/data/papers.db`；
+1. 创建或选择自己的 GitHub 仓库，并提交代码及 `docs/data/papers.db`；
 2. 推送到 `main`；
 3. GitHub 仓库 **Settings → Pages**；
 4. **Deploy from a branch**，选择 `main` 和 `/docs`；
 5. 等待 GitHub 显示实际 Pages URL，再重复桌面和手机验收。
 
-不要在确认账户、仓库名称和公开可见性之前自动创建仓库、推送或启用 Pages。本 README 不填写尚不存在的 URL。
+操作前请确认自己的 GitHub 账户、仓库名称和公开可见性；部署完成后，以仓库 **Settings → Pages** 显示的实际 URL 为准。
 
 ## 10. 隐私、版权与访问边界
 

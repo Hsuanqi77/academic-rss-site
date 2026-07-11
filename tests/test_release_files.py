@@ -95,3 +95,19 @@ def test_readme_documents_daily_cloud_update_and_recovery() -> None:
         "docs/data/papers.db",
     ):
         assert phrase in readme
+
+
+def test_readme_accurately_describes_automation_timing_and_current_deployment() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "UTC 00:00",
+        "可能延迟",
+        "`Commit database update`",
+        "最近一次成功更新（自动或手动）",
+        "首次自行部署或重新配置 GitHub Pages",
+    ):
+        assert phrase in readme
+
+    assert "尚未创建或推送 GitHub 仓库" not in readme
+    assert "本 README 不填写尚不存在的 URL" not in readme
