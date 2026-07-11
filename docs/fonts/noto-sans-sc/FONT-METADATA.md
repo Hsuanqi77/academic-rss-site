@@ -5,7 +5,7 @@
 - Tarball: `https://registry.npmjs.org/@fontsource-variable/noto-sans-sc/-/noto-sans-sc-5.2.10.tgz`
 - Integrity: `sha512-zdk10i5HrDQTXI7ldD61zToX1fsgig8vDTsu7zB48SXOitWfuX0e5viZAwnkHuhwh096PU6X6i1AyAsbBCISpA==`
 - Upstream font version: `v40`
-- License: `SIL Open Font License 1.1`
+- License: `OFL-1.1`
 - WOFF2 files: `98`
 - Total WOFF2 bytes: `4489160`
 - Included subsets: numbered Simplified Chinese subsets and `latin`

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import re
 import tarfile
 import urllib.request
@@ -21,7 +22,8 @@ INTEGRITY = (
     "sha512-zdk10i5HrDQTXI7ldD61zToX1fsgig8vDTsu7zB48SXOitWfuX0e5viZAwnkHuhwh"
     "096PU6X6i1AyAsbBCISpA=="
 )
-UPSTREAM_VERSION = "v40"
+EXPECTED_UPSTREAM_VERSION = "v40"
+EXPECTED_LICENSE = "OFL-1.1"
 EXPECTED_FONT_COUNT = 98
 EXPECTED_TOTAL_BYTES = 4_489_160
 FONT_NAME = re.compile(r"noto-sans-sc-(?:\d+|latin)-wght-normal\.woff2")
@@ -84,6 +86,32 @@ def _select_faces(css: str) -> tuple[str, list[str]]:
     return "\n\n".join(face for _, face in selected), filenames
 
 
+def _verify_archive_metadata(package_json: bytes, metadata_json: bytes) -> tuple[str, str]:
+    try:
+        package = json.loads(package_json)
+        metadata = json.loads(metadata_json)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Invalid archive metadata JSON") from error
+
+    expected_package = {
+        "name": PACKAGE,
+        "version": VERSION,
+        "license": EXPECTED_LICENSE,
+    }
+    if any(package.get(field) != value for field, value in expected_package.items()):
+        raise RuntimeError("Unexpected package.json archive metadata")
+
+    license_data = metadata.get("license")
+    license_type = license_data.get("type") if isinstance(license_data, dict) else None
+    if (
+        metadata.get("id") != "noto-sans-sc"
+        or metadata.get("version") != EXPECTED_UPSTREAM_VERSION
+        or license_type != EXPECTED_LICENSE
+    ):
+        raise RuntimeError("Unexpected metadata.json archive metadata")
+    return metadata["version"], license_type
+
+
 def _safe_font_dir() -> Path:
     repo_root = REPO_ROOT.resolve()
     target = FONT_DIR.resolve()
@@ -105,6 +133,15 @@ def _safe_font_target(font_dir: Path, filename: str) -> Path:
 
 def _replace_vendored_css(vendored_css: str) -> None:
     existing = STYLESHEET.read_text(encoding="utf-8")
+    begin_count = existing.count(BEGIN_MARKER)
+    end_count = existing.count(END_MARKER)
+    if begin_count or end_count:
+        if (
+            begin_count != 1
+            or end_count != 1
+            or existing.index(BEGIN_MARKER) > existing.index(END_MARKER)
+        ):
+            raise RuntimeError("Invalid vendored Noto Sans SC markers in stylesheet")
     marker_block = re.compile(
         rf"{re.escape(BEGIN_MARKER)}.*?{re.escape(END_MARKER)}\s*", re.DOTALL
     )
@@ -113,15 +150,15 @@ def _replace_vendored_css(vendored_css: str) -> None:
     STYLESHEET.write_text(block + without_old_block, encoding="utf-8", newline="\n")
 
 
-def _metadata(total_bytes: int) -> str:
+def _metadata(total_bytes: int, upstream_version: str, license_type: str) -> str:
     return f"""# Vendored Noto Sans SC
 
 - Package: `{PACKAGE}`
 - Version: `{VERSION}`
 - Tarball: `{TARBALL}`
 - Integrity: `{INTEGRITY}`
-- Upstream font version: `{UPSTREAM_VERSION}`
-- License: `SIL Open Font License 1.1`
+- Upstream font version: `{upstream_version}`
+- License: `{license_type}`
 - WOFF2 files: `{EXPECTED_FONT_COUNT}`
 - Total WOFF2 bytes: `{total_bytes}`
 - Included subsets: numbered Simplified Chinese subsets and `latin`
@@ -134,6 +171,10 @@ Generated deterministically by `scripts/vendor_noto_sans_sc.py`.
 def main() -> None:
     payload = _download()
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        upstream_version, license_type = _verify_archive_metadata(
+            _read_member(archive, "package/package.json"),
+            _read_member(archive, "package/metadata.json"),
+        )
         source_css = _read_member(archive, "package/wght.css").decode("utf-8")
         license_text = _read_member(archive, "package/LICENSE").decode("utf-8")
         vendored_css, filenames = _select_faces(source_css)
@@ -162,7 +203,7 @@ def main() -> None:
     (font_dir / "LICENSE.txt").write_text(license_text, encoding="utf-8", newline="\n")
     (font_dir / "SHA256SUMS").write_text(checksums, encoding="ascii", newline="\n")
     (font_dir / "FONT-METADATA.md").write_text(
-        _metadata(total_bytes), encoding="utf-8", newline="\n"
+        _metadata(total_bytes, upstream_version, license_type), encoding="utf-8", newline="\n"
     )
     _replace_vendored_css(vendored_css)
 

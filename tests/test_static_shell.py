@@ -19,6 +19,8 @@ NOTO_SANS_SC_INTEGRITY = (
     "sha512-zdk10i5HrDQTXI7ldD61zToX1fsgig8vDTsu7zB48SXOitWfuX0e5viZAwnkHuhwh"
     "096PU6X6i1AyAsbBCISpA=="
 )
+NOTO_SANS_SC_UPSTREAM_VERSION = "v40"
+NOTO_SANS_SC_LICENSE = "OFL-1.1"
 SQL_JS_1_10_2_SOURCES = {
     "sql-wasm.js": (
         "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js",
@@ -125,7 +127,8 @@ def test_noto_sans_sc_is_pinned_auditable_and_fully_local() -> None:
     assert f"Version: `{NOTO_SANS_SC_VERSION}`" in metadata
     assert f"Tarball: `{NOTO_SANS_SC_TARBALL}`" in metadata
     assert f"Integrity: `{NOTO_SANS_SC_INTEGRITY}`" in metadata
-    assert "Upstream font version: `v40`" in metadata
+    assert f"Upstream font version: `{NOTO_SANS_SC_UPSTREAM_VERSION}`" in metadata
+    assert f"License: `{NOTO_SANS_SC_LICENSE}`" in metadata
     assert "SIL OPEN FONT LICENSE Version 1.1" in license_text
 
     marker_start = f"/* BEGIN VENDORED NOTO SANS SC {NOTO_SANS_SC_VERSION} */"
@@ -143,6 +146,8 @@ def test_noto_sans_sc_is_pinned_auditable_and_fully_local() -> None:
 
     css_files = set(re.findall(r"\./fonts/noto-sans-sc/([^)'\"]+\.woff2)", vendored_css))
     directory_files = {path.name for path in FONT_DIR.glob("*.woff2")}
+    allowed_filename = re.compile(r"noto-sans-sc-(?:\d+|latin)-wght-normal\.woff2")
+    css_urls = re.findall(r"url\(([^)]+)\)", vendored_css)
     checksum_entries = {}
     for line in checksums_text.splitlines():
         digest, filename = line.split("  ", 1)
@@ -150,6 +155,16 @@ def test_noto_sans_sc_is_pinned_auditable_and_fully_local() -> None:
 
     assert len(css_files) == 98
     assert css_files == directory_files == set(checksum_entries)
+    assert sum((FONT_DIR / filename).stat().st_size for filename in directory_files) == 4_489_160
+    assert all(allowed_filename.fullmatch(filename) for filename in directory_files)
+    assert len(css_urls) == 98
+    assert all(
+        re.fullmatch(
+            r"\./fonts/noto-sans-sc/noto-sans-sc-(?:\d+|latin)-wght-normal\.woff2",
+            url,
+        )
+        for url in css_urls
+    )
     assert "noto-sans-sc-latin-wght-normal.woff2" in css_files
     assert not any(
         excluded in filename
