@@ -36,7 +36,7 @@ def static_site_url() -> Iterator[str]:
         thread.join(timeout=5)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def shell_browser() -> Iterator[Browser]:
     with sync_playwright() as playwright:
         browser = _launch_available_browser(playwright)
