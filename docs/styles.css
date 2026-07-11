@@ -1081,10 +1081,12 @@ a { color: inherit; }
 .guide-group summary::-webkit-details-marker { display: none; }
 .guide-group summary::marker { content: ""; }
 .guide-group summary::before {
-  content: "›"; flex: 0 0 auto; color: var(--copper-dark); font-size: 18px; line-height: 1.05;
-  transform-origin: center; transition: transform .16s ease;
+  content: ""; flex: 0 0 auto; width: 8px; height: 8px; margin: 4px 2px 0 1px;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  color: var(--copper-dark); transform: rotate(-45deg); transform-origin: center;
+  transition: transform .16s ease;
 }
-.guide-group[open] summary::before { transform: rotate(90deg); }
+.guide-group[open] summary::before { transform: rotate(45deg); }
 .guide-group summary:hover { color: var(--copper-dark); background: rgba(185, 84, 46, .05); }
 .guide-group[open] summary { color: var(--ink); background: var(--paper-deep); border-radius: 7px 7px 0 0; }
 .guide-group summary span:first-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }

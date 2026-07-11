@@ -160,7 +160,9 @@ def test_guide_disclosure_indicator_and_focus_outline_are_not_clipped() -> None:
     assert group_rule is not None
     assert "overflow: hidden" not in group_rule.group(1)
     assert re.search(
-        r"\.guide-group summary::before\s*\{[^}]*content:\s*[\"'][^\"']+[\"']",
+        r"\.guide-group summary::before\s*\{[^}]*content:\s*[\"'][\"']"
+        r"[^}]*border-right:\s*2px\s+solid\s+currentColor"
+        r"[^}]*border-bottom:\s*2px\s+solid\s+currentColor",
         css,
         re.S,
     )

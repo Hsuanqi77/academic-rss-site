@@ -299,6 +299,8 @@ def test_guide_disclosure_has_visible_indicator_and_unclipped_keyboard_focus(
           const groupStyle = getComputedStyle(element.closest('.guide-group'));
           return {
             indicator: indicatorStyle.content,
+            indicatorBorderRight: indicatorStyle.borderRightWidth,
+            indicatorBorderBottom: indicatorStyle.borderBottomWidth,
             outlineStyle: focusStyle.outlineStyle,
             outlineWidth: focusStyle.outlineWidth,
             outlineOffset: focusStyle.outlineOffset,
@@ -307,11 +309,39 @@ def test_guide_disclosure_has_visible_indicator_and_unclipped_keyboard_focus(
         }"""
     )
 
-    assert appearance["indicator"] not in {"none", "normal", '""'}
+    assert appearance["indicator"] == '""'
+    assert appearance["indicatorBorderRight"] == "2px"
+    assert appearance["indicatorBorderBottom"] == "2px"
     assert appearance["outlineStyle"] != "none"
     assert appearance["outlineWidth"] == "3px"
     assert appearance["outlineOffset"] == "3px"
     assert appearance["groupOverflow"] == "visible"
+
+
+def test_guide_chevron_does_not_pollute_name_and_rotates_with_open_state(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory()
+    group = page.locator("#guide details").nth(1)
+    summary = group.locator("summary")
+    closed_transform = summary.evaluate(
+        "element => getComputedStyle(element, '::before').transform"
+    )
+
+    accessible_snapshot = summary.aria_snapshot()
+    assert "IEEE" in accessible_snapshot
+    assert "›" not in accessible_snapshot
+    assert closed_transform != "none"
+
+    summary.click()
+    page.wait_for_timeout(200)
+    open_transform = summary.evaluate(
+        "element => getComputedStyle(element, '::before').transform"
+    )
+
+    assert group.get_attribute("open") == ""
+    assert open_transform != "none"
+    assert open_transform != closed_transform
 
 
 def test_guide_stacks_at_390px_without_overflow_and_keeps_approved_sizes(
