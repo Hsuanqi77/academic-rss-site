@@ -211,9 +211,14 @@ def load_topic_catalog(path: Path) -> TopicCatalog:
         if len(keywords) != len(raw_keywords):
             raise ConfigError(f"topic {topic_id} keywords must be nonblank strings")
 
-        normalized_keywords = [normalize_match_separators(keyword) for keyword in keywords]
-        if len(set(normalized_keywords)) != len(normalized_keywords):
-            raise ConfigError(f"topic {topic_id} has duplicate normalized keyword")
+        normalized_keywords: set[str] = set()
+        for keyword in keywords:
+            normalized_keyword = normalize_match_separators(keyword)
+            if normalized_keyword in normalized_keywords:
+                raise ConfigError(
+                    f"topic {topic_id} has duplicate normalized keyword: {normalized_keyword}"
+                )
+            normalized_keywords.add(normalized_keyword)
 
         requires_any_group: tuple[str, ...] = ()
         if "requires_any_group" in row:
@@ -257,7 +262,8 @@ def load_topic_catalog(path: Path) -> TopicCatalog:
         empty_group = next(group.id for group in groups if group.id in empty_groups)
         raise ConfigError(f"topic group has no topics: {empty_group}")
 
-    return TopicCatalog(groups=tuple(groups), topics=tuple(topics))
+    ordered_groups = tuple(sorted(groups, key=lambda group: group.order))
+    return TopicCatalog(groups=ordered_groups, topics=tuple(topics))
 
 
 def _load_rows(path: Path, key: str) -> list[Any]:

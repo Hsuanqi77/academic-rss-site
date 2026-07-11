@@ -473,7 +473,7 @@ def test_configuration_models_are_immutable_and_slotted() -> None:
         topic.group = "changed"  # type: ignore[misc]
 
 
-def test_valid_topic_catalog_loads_once_and_load_topics_is_compatible(tmp_path: Path) -> None:
+def test_valid_topic_catalog_loads(tmp_path: Path) -> None:
     path = write_yaml(
         tmp_path,
         """
@@ -495,7 +495,71 @@ topics:
     assert catalog.topics == (
         TopicConfig("saw", "SAW", ("surface acoustic wave", "SAW"), "acoustic-rf"),
     )
+
+
+def test_load_topics_returns_catalog_topics(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path,
+        """
+topic_groups:
+  - {id: acoustic-rf, label: Acoustic, order: 1}
+topics:
+  - {id: saw, label: SAW, group: acoustic-rf, keywords: [SAW]}
+""",
+    )
+
+    catalog = load_topic_catalog(path)
+
     assert load_topics(path) == list(catalog.topics)
+
+
+def test_load_topic_catalog_reads_path_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_yaml(
+        tmp_path,
+        """
+topic_groups:
+  - {id: acoustic-rf, label: Acoustic, order: 1}
+topics:
+  - {id: saw, label: SAW, group: acoustic-rf, keywords: [SAW]}
+""",
+    )
+    original_read_text = Path.read_text
+    read_count = 0
+
+    def counting_read_text(self: Path, *args, **kwargs) -> str:
+        nonlocal read_count
+        read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    load_topic_catalog(path)
+
+    assert read_count == 1
+
+
+def test_topic_groups_are_returned_in_order_field_order(tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path,
+        """
+topic_groups:
+  - {id: piezo-ferroelectric, label: Piezo, order: 2}
+  - {id: acoustic-rf, label: Acoustic, order: 1}
+topics:
+  - {id: piezoelectric, label: Piezoelectric, group: piezo-ferroelectric, keywords: [piezoelectric]}
+  - {id: saw, label: SAW, group: acoustic-rf, keywords: [SAW]}
+""",
+    )
+
+    catalog = load_topic_catalog(path)
+
+    assert [(group.id, group.order) for group in catalog.groups] == [
+        ("acoustic-rf", 1),
+        ("piezo-ferroelectric", 2),
+    ]
+    assert [topic.id for topic in catalog.topics] == ["piezoelectric", "saw"]
 
 
 def test_match_separator_normalization_handles_unicode_and_collapses_spacing() -> None:
@@ -958,7 +1022,10 @@ topics:
 """,
     )
 
-    with pytest.raises(ConfigError, match="^topic saw has duplicate normalized keyword"):
+    with pytest.raises(
+        ConfigError,
+        match="^topic saw has duplicate normalized keyword: surface acoustic wave$",
+    ):
         load_topic_catalog(path)
 
 
