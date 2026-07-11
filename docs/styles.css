@@ -896,8 +896,8 @@
   --signal: #007d83;
   --signal-wash: #dcefed;
   --shadow: 0 18px 48px rgba(19, 41, 55, .09);
-  --ui: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  --editorial: "Songti SC", SimSun, "Noto Serif CJK SC", Georgia, serif;
+  --ui: "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --editorial: "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -948,7 +948,7 @@ a { color: inherit; }
 .brand strong { display: block; font: 700 19px/1.1 var(--editorial); letter-spacing: .02em; }
 .brand small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; letter-spacing: .18em; }
 .site-header nav { display: flex; gap: 26px; margin-left: auto; }
-.site-header nav a { color: var(--muted); font-size: 13px; text-decoration: none; }
+.site-header nav a { color: var(--muted); font-size: 13px; font-weight: 500; text-decoration: none; }
 .site-header nav a:hover { color: var(--copper-dark); }
 .filter-toggle { display: none; margin-left: auto; }
 .badge {
@@ -970,7 +970,7 @@ a { color: inherit; }
 .filters-heading h2 { margin: 0; font: 700 26px/1 var(--editorial); }
 .filters-heading .icon-button { display: none; }
 .eyebrow, .filter-index {
-  margin: 0 0 5px; color: var(--copper-dark); font: 700 10px/1.2 ui-monospace, Consolas, monospace;
+  margin: 0 0 5px; color: var(--copper-dark); font: 700 13px/1.2 ui-monospace, Consolas, monospace;
   letter-spacing: .16em; text-transform: uppercase;
 }
 .filter-group { display: grid; gap: 7px; margin: 0; padding: 17px 0; border: 0; border-top: 1px solid var(--line); }
@@ -978,7 +978,7 @@ a { color: inherit; }
 .filter-group legend { width: 100%; padding: 17px 0 9px; border-top: 1px solid var(--line); color: var(--ink); letter-spacing: .06em; }
 .filters input, .filters select, .search-row input, .search-row select {
   min-width: 0; width: 100%; min-height: 42px; padding: 9px 11px; color: var(--ink);
-  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 0;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 0; font-weight: 500;
 }
 .filters input:hover, .filters select:hover, .search-row input:hover, .search-row select:hover { border-color: var(--signal); }
 .tag-options { display: grid; gap: 7px; }
@@ -987,7 +987,7 @@ a { color: inherit; }
 .empty-note { margin: 0; color: var(--muted); font-size: 12px; }
 .secondary, .filter-toggle, .icon-button {
   min-height: 42px; padding: 8px 12px; color: var(--ink); background: var(--panel);
-  border: 1px solid var(--line-strong); border-radius: 0;
+  border: 1px solid var(--line-strong); border-radius: 0; font-weight: 500;
 }
 .secondary { width: 100%; }
 .secondary:hover, .filter-toggle:hover, .icon-button:hover { border-color: var(--copper); color: var(--copper-dark); }
@@ -1023,13 +1023,13 @@ a { color: inherit; }
 .article-card a { text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .meta, .authors, .abstract { color: var(--muted); overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { padding: 2px 8px; background: var(--paper-deep); border: 1px solid var(--line); font-size: 11px; }
+.chip { padding: 2px 8px; background: var(--paper-deep); border: 1px solid var(--line); font-size: 11px; font-weight: 500; }
 .chip.open { background: var(--signal-wash); border-color: var(--signal); color: #005e63; }
 .skeleton-card span { display: block; height: 11px; margin: 10px 0; background: #e6e2d7; }
 .skeleton-card span:first-child { width: 72%; height: 17px; }
 .skeleton-card span:last-child { width: 46%; }
 .pagination { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0; }
-.pagination button { min-width: 42px; min-height: 42px; background: var(--panel); border: 1px solid var(--line-strong); }
+.pagination button { min-width: 42px; min-height: 42px; background: var(--panel); border: 1px solid var(--line-strong); font-weight: 500; }
 .pagination button[aria-current="page"] { background: var(--ink); color: #fff; }
 .pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .pagination-ellipsis { display: inline-grid; min-width: 26px; place-items: center; color: var(--muted); }

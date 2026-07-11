@@ -112,6 +112,49 @@ def test_shell_supports_drawer_accessibility_and_responsive_motion() -> None:
     assert "focus-visible" in css
 
 
+def test_typography_uses_local_noto_sans_sc_without_resizing_exclusions() -> None:
+    css = (DOCS / "styles.css").read_text(encoding="utf-8")
+
+    assert (
+        '--ui: "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", sans-serif;'
+        in css
+    )
+    assert (
+        '--editorial: "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", '
+        "sans-serif;"
+        in css
+    )
+    eyebrow_rule = re.search(r"\.eyebrow, \.filter-index\s*\{([^}]+)\}", css)
+    assert eyebrow_rule is not None
+    assert "font: 700 13px/1.2 ui-monospace, Consolas, monospace;" in eyebrow_rule.group(1)
+
+    exclusion_contracts = (
+        r"\.edition\s*\{[^}]*font: 11px/1\.5 ui-monospace, Consolas, monospace;",
+        r"\.search-label\s*\{[^}]*font: 700 11px/1 var\(--ui\);",
+        r"footer\s*\{[^}]*font: 10px/1\.4 ui-monospace, Consolas, monospace;",
+        r"\.badge\s*\{[^}]*font: 700 11px/1 var\(--ui\);",
+        r"\.chip\s*\{[^}]*font-size: 11px;",
+    )
+    for contract in exclusion_contracts:
+        assert re.search(contract, css), contract
+
+
+def test_interactive_typography_has_medium_weight_without_duplicate_selectors() -> None:
+    css = (DOCS / "styles.css").read_text(encoding="utf-8")
+    selectors = (
+        ".site-header nav a",
+        ".filters input, .filters select, .search-row input, .search-row select",
+        ".secondary, .filter-toggle, .icon-button",
+        ".chip",
+        ".pagination button",
+    )
+
+    for selector in selectors:
+        rules = re.findall(rf"{re.escape(selector)}\s*\{{([^}}]+)\}}", css)
+        assert len(rules) == 1, selector
+        assert "font-weight: 500;" in rules[0], selector
+
+
 def test_text_assets_do_not_contain_unicode_replacement_characters() -> None:
     for path in (DOCS / "index.html", DOCS / "styles.css", DOCS / "js" / "app.js"):
         assert "\ufffd" not in path.read_text(encoding="utf-8")

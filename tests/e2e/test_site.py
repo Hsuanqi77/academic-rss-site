@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import BrowserContext, Page, Route, expect
 
 
 def _wait_ready(page: Page) -> None:
@@ -22,6 +22,76 @@ def _visible_uids(page: Page) -> set[str]:
             "cards => cards.map(card => card.dataset.articleUid)"
         )
     )
+
+
+def test_local_noto_sans_sc_typography_is_applied(page: Page, site_url: str) -> None:
+    font_requests: list[str] = []
+    page.on(
+        "request",
+        lambda request: (
+            font_requests.append(request.url)
+            if "/fonts/noto-sans-sc/" in request.url
+            else None
+        ),
+    )
+
+    response = page.goto(site_url)
+    assert response is not None and response.ok
+    _wait_ready(page)
+    loaded_faces = page.evaluate(
+        """async () => (await document.fonts.load(
+            '400 16px "Noto Sans SC Variable"',
+            '最新论文'
+        )).length"""
+    )
+
+    assert loaded_faces > 0
+    assert font_requests
+    assert all(
+        (urlparse(request_url).scheme, urlparse(request_url).netloc)
+        == (urlparse(site_url).scheme, urlparse(site_url).netloc)
+        for request_url in font_requests
+    )
+    assert "Noto Sans SC Variable" in page.locator("body").evaluate(
+        "element => getComputedStyle(element).fontFamily"
+    )
+    assert "Noto Sans SC Variable" in page.locator(".article-card h2").first.evaluate(
+        "element => getComputedStyle(element).fontFamily"
+    )
+    expect(page.locator(".eyebrow").first).to_have_css("font-size", "13px")
+    expect(page.locator(".filter-index").first).to_have_css("font-size", "13px")
+    expect(page.locator(".edition")).to_have_css("font-size", "11px")
+    expect(page.locator(".search-label")).to_have_css("font-size", "11px")
+    expect(page.locator(".brand-mark")).to_have_css("font-family", "Georgia, serif")
+
+
+def test_font_request_failure_keeps_site_usable(
+    browser_context: BrowserContext,
+    site_url: str,
+) -> None:
+    fallback_page = browser_context.new_page()
+    fallback_page.set_default_timeout(7_000)
+    intercepted: list[str] = []
+
+    def abort_font(route: Route) -> None:
+        intercepted.append(route.request.url)
+        route.abort()
+
+    fallback_page.route("**/fonts/noto-sans-sc/*.woff2", abort_font)
+    try:
+        response = fallback_page.goto(site_url)
+        assert response is not None and response.ok
+        _wait_ready(fallback_page)
+        expect(fallback_page.locator(".article-card")).to_have_count(20)
+        search = fallback_page.locator("#search")
+        search.fill("Matrix")
+        expect(search).to_have_value("Matrix")
+        assert intercepted
+        assert fallback_page.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth"
+        ) is True
+    finally:
+        fallback_page.close()
 
 
 def test_initial_real_http_load_has_no_browser_errors(
