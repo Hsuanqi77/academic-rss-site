@@ -1068,20 +1068,26 @@ a { color: inherit; }
   align-items: start; gap: 12px;
 }
 .guide-group {
-  min-width: 0; overflow: hidden; background: var(--paper);
+  min-width: 0; overflow: visible; background: var(--paper);
   border: 1px solid var(--line); border-radius: 8px;
   transition: border-color .16s ease, box-shadow .16s ease;
 }
 .guide-group[open] { border-color: var(--line-strong); box-shadow: 5px 5px 0 rgba(19, 41, 55, .04); }
 .guide-group summary {
   display: flex; justify-content: space-between; gap: 12px; padding: 14px;
-  cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1.45;
+  cursor: pointer; border-radius: 7px; font-size: 13px; font-weight: 700; line-height: 1.45;
   transition: color .16s ease, background-color .16s ease;
 }
-.guide-group summary::marker { color: var(--copper-dark); }
+.guide-group summary::-webkit-details-marker { display: none; }
+.guide-group summary::marker { content: ""; }
+.guide-group summary::before {
+  content: "›"; flex: 0 0 auto; color: var(--copper-dark); font-size: 18px; line-height: 1.05;
+  transform-origin: center; transition: transform .16s ease;
+}
+.guide-group[open] summary::before { transform: rotate(90deg); }
 .guide-group summary:hover { color: var(--copper-dark); background: rgba(185, 84, 46, .05); }
-.guide-group[open] summary { color: var(--ink); background: var(--paper-deep); }
-.guide-group summary span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.guide-group[open] summary { color: var(--ink); background: var(--paper-deep); border-radius: 7px 7px 0 0; }
+.guide-group summary span:first-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .guide-group summary span:last-child {
   flex: 0 0 auto; color: var(--muted);
   font: 700 11px/1.7 ui-monospace, Consolas, monospace; letter-spacing: .04em;

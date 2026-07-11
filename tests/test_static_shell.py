@@ -153,6 +153,22 @@ def test_guide_uses_approved_type_sizes_and_responsive_grid() -> None:
     )
 
 
+def test_guide_disclosure_indicator_and_focus_outline_are_not_clipped() -> None:
+    css = (DOCS / "styles.css").read_text(encoding="utf-8")
+    group_rule = re.search(r"\.guide-group\s*\{([^}]+)\}", css)
+
+    assert group_rule is not None
+    assert "overflow: hidden" not in group_rule.group(1)
+    assert re.search(
+        r"\.guide-group summary::before\s*\{[^}]*content:\s*[\"'][^\"']+[\"']",
+        css,
+        re.S,
+    )
+    assert re.search(
+        r"\.guide-group\[open\] summary::before\s*\{[^}]*transform:", css, re.S
+    )
+
+
 def test_typography_uses_local_noto_sans_sc_without_resizing_exclusions() -> None:
     css = (DOCS / "styles.css").read_text(encoding="utf-8")
 

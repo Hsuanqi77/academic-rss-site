@@ -285,6 +285,35 @@ def test_guide_disclosures_are_keyboard_operable_and_use_two_columns_on_desktop(
     ) == 2
 
 
+def test_guide_disclosure_has_visible_indicator_and_unclipped_keyboard_focus(
+    page_factory: Callable[..., Page],
+) -> None:
+    page = page_factory()
+    summary = page.locator("#guide details summary").first
+
+    summary.focus()
+    appearance = summary.evaluate(
+        """element => {
+          const focusStyle = getComputedStyle(element);
+          const indicatorStyle = getComputedStyle(element, '::before');
+          const groupStyle = getComputedStyle(element.closest('.guide-group'));
+          return {
+            indicator: indicatorStyle.content,
+            outlineStyle: focusStyle.outlineStyle,
+            outlineWidth: focusStyle.outlineWidth,
+            outlineOffset: focusStyle.outlineOffset,
+            groupOverflow: groupStyle.overflow,
+          };
+        }"""
+    )
+
+    assert appearance["indicator"] not in {"none", "normal", '""'}
+    assert appearance["outlineStyle"] != "none"
+    assert appearance["outlineWidth"] == "3px"
+    assert appearance["outlineOffset"] == "3px"
+    assert appearance["groupOverflow"] == "visible"
+
+
 def test_guide_stacks_at_390px_without_overflow_and_keeps_approved_sizes(
     page_factory: Callable[..., Page],
 ) -> None:
