@@ -17,6 +17,437 @@ from paper_radar.matching import normalize_match_separators
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+CHARACTERIZATION_CONTEXT_GROUPS = (
+    "acoustic-rf",
+    "piezo-ferroelectric",
+    "ultrasound-sensing",
+    "mems-nems",
+    "electronic-semiconductor",
+    "ai-computational",
+    "emerging-cross-disciplinary",
+)
+
+EXPECTED_PRODUCTION_TOPICS = (
+    (
+        "baw",
+        "BAW",
+        "acoustic-rf",
+        ("bulk acoustic wave", "bulk acoustic resonator", "BAW resonator", "BAW filter"),
+        (),
+    ),
+    (
+        "saw",
+        "SAW",
+        "acoustic-rf",
+        ("surface acoustic wave", "surface acoustic resonator", "SAW resonator", "SAW filter"),
+        (),
+    ),
+    (
+        "fbar",
+        "FBAR",
+        "acoustic-rf",
+        ("film bulk acoustic resonator", "thin-film bulk acoustic resonator", "FBAR", "FBAR filter"),
+        (),
+    ),
+    (
+        "lamb-wave",
+        "Lamb wave",
+        "acoustic-rf",
+        ("Lamb wave", "Lamb wave resonator", "LWR", "contour-mode resonator"),
+        (),
+    ),
+    (
+        "acoustic-resonator",
+        "Acoustic resonator",
+        "acoustic-rf",
+        ("acoustic resonator", "piezoelectric resonator", "acoustic filter", "resonator filter"),
+        (),
+    ),
+    (
+        "rf-microwave",
+        "RF & Microwave",
+        "acoustic-rf",
+        (
+            "radio frequency",
+            "RF front-end",
+            "RF filter",
+            "microwave",
+            "millimeter wave",
+            "millimetre wave",
+            "mmWave",
+        ),
+        (),
+    ),
+    (
+        "multiplexer",
+        "Multiplexer",
+        "acoustic-rf",
+        ("duplexer", "multiplexer", "diplexer", "filter bank", "frequency multiplexer"),
+        (),
+    ),
+    (
+        "piezoelectric",
+        "Piezoelectric",
+        "piezo-ferroelectric",
+        ("piezoelectric", "piezoelectricity", "piezoelectric coefficient", "piezoelectric thin film"),
+        (),
+    ),
+    (
+        "ferroelectric",
+        "Ferroelectric",
+        "piezo-ferroelectric",
+        ("ferroelectric", "ferroelectricity", "ferroelectric thin film", "ferroelectric polarization"),
+        (),
+    ),
+    (
+        "aln",
+        "AlN",
+        "piezo-ferroelectric",
+        ("aluminum nitride", "aluminium nitride", "AlN thin film", "AlN piezoelectric"),
+        (),
+    ),
+    (
+        "alscn",
+        "AlScN",
+        "piezo-ferroelectric",
+        ("aluminum scandium nitride", "aluminium scandium nitride", "scandium-doped AlN", "ScAlN", "AlScN"),
+        (),
+    ),
+    (
+        "pzt",
+        "PZT",
+        "piezo-ferroelectric",
+        ("lead zirconate titanate", "PZT thin film", "PZT piezoelectric"),
+        (),
+    ),
+    (
+        "linbo3",
+        "LiNbO3",
+        "piezo-ferroelectric",
+        ("lithium niobate", "LiNbO3", "thin-film lithium niobate", "LNOI"),
+        (),
+    ),
+    (
+        "hfo2-hzo",
+        "HfO2/HZO",
+        "piezo-ferroelectric",
+        ("ferroelectric hafnium oxide", "hafnium zirconium oxide", "HfO2 ferroelectric", "HZO ferroelectric"),
+        (),
+    ),
+    (
+        "lead-free-piezoelectrics",
+        "Lead-free piezoelectrics",
+        "piezo-ferroelectric",
+        ("lead-free piezoelectric", "potassium sodium niobate", "KNN", "barium titanate", "BaTiO3"),
+        (),
+    ),
+    (
+        "film-growth",
+        "Film growth",
+        "piezo-ferroelectric",
+        (
+            "reactive sputtering",
+            "magnetron sputtering",
+            "MOCVD",
+            "atomic layer deposition",
+            "pulsed laser deposition",
+            "sol-gel deposition",
+            "epitaxial growth",
+        ),
+        (),
+    ),
+    (
+        "pmut",
+        "PMUT",
+        "ultrasound-sensing",
+        (
+            "piezoelectric micromachined ultrasonic transducer",
+            "piezoelectric micromachined ultrasound transducer",
+            "PMUT",
+            "PMUT array",
+        ),
+        (),
+    ),
+    (
+        "cmut",
+        "CMUT",
+        "ultrasound-sensing",
+        (
+            "capacitive micromachined ultrasonic transducer",
+            "capacitive micromachined ultrasound transducer",
+            "CMUT",
+            "CMUT array",
+        ),
+        (),
+    ),
+    (
+        "ultrasonic-transducer",
+        "Ultrasonic transducer",
+        "ultrasound-sensing",
+        ("ultrasonic transducer", "ultrasound transducer", "piezoelectric transducer", "high-frequency transducer"),
+        (),
+    ),
+    (
+        "ultrasound-imaging",
+        "Ultrasound imaging",
+        "ultrasound-sensing",
+        ("ultrasound imaging", "ultrasonic imaging", "medical ultrasound", "high-frequency ultrasound", "photoacoustic imaging"),
+        (),
+    ),
+    (
+        "therapeutic-ultrasound",
+        "Therapeutic ultrasound",
+        "ultrasound-sensing",
+        ("therapeutic ultrasound", "focused ultrasound", "high-intensity focused ultrasound", "HIFU"),
+        (),
+    ),
+    (
+        "acoustic-sensing",
+        "Acoustic sensing",
+        "ultrasound-sensing",
+        ("acoustic sensor", "ultrasonic sensor", "acoustic sensing", "ultrasonic sensing", "non-destructive testing", "nondestructive evaluation"),
+        (),
+    ),
+    (
+        "mems",
+        "MEMS",
+        "mems-nems",
+        ("microelectromechanical system", "MEMS device", "MEMS resonator", "MEMS sensor"),
+        (),
+    ),
+    (
+        "nems",
+        "NEMS",
+        "mems-nems",
+        ("nanoelectromechanical system", "NEMS device", "NEMS resonator"),
+        (),
+    ),
+    (
+        "microfabrication",
+        "Microfabrication",
+        "mems-nems",
+        ("microfabrication", "micromachining", "surface micromachining", "bulk micromachining", "deep reactive ion etching"),
+        (),
+    ),
+    (
+        "wafer-integration",
+        "Wafer integration",
+        "mems-nems",
+        ("wafer bonding", "wafer-level packaging", "through-silicon via", "TSV integration", "heterogeneous integration"),
+        (),
+    ),
+    (
+        "cmos-integration",
+        "CMOS integration",
+        "mems-nems",
+        ("CMOS-compatible", "CMOS integration", "monolithic integration", "back-end-of-line", "BEOL integration"),
+        (),
+    ),
+    (
+        "packaging",
+        "Packaging",
+        "mems-nems",
+        ("MEMS packaging", "hermetic packaging", "vacuum packaging", "chip-scale packaging"),
+        (),
+    ),
+    (
+        "transistor",
+        "Transistor",
+        "electronic-semiconductor",
+        ("field-effect transistor", "thin-film transistor", "MOSFET", "FinFET", "GAAFET", "TFET", "HEMT"),
+        (),
+    ),
+    (
+        "ferroelectric-transistor",
+        "Ferroelectric transistor",
+        "electronic-semiconductor",
+        ("ferroelectric field-effect transistor", "FeFET", "negative capacitance transistor", "NCFET"),
+        (),
+    ),
+    (
+        "memory-memristor",
+        "Memory & Memristor",
+        "electronic-semiconductor",
+        ("nonvolatile memory", "resistive random-access memory", "RRAM", "memristor", "ferroelectric memory", "neuromorphic device"),
+        (),
+    ),
+    (
+        "power-electronics",
+        "Power electronics",
+        "electronic-semiconductor",
+        ("power semiconductor", "power transistor", "power diode", "high-voltage device", "power electronic device"),
+        (),
+    ),
+    (
+        "wide-bandgap-devices",
+        "Wide-bandgap devices",
+        "electronic-semiconductor",
+        ("gallium nitride device", "GaN transistor", "GaN HEMT", "silicon carbide device", "SiC MOSFET", "ultra-wide-bandgap semiconductor"),
+        (),
+    ),
+    (
+        "2d-electronics",
+        "2D electronics",
+        "electronic-semiconductor",
+        ("two-dimensional transistor", "2D semiconductor", "MoS2 transistor", "transition metal dichalcogenide", "van der Waals device"),
+        (),
+    ),
+    (
+        "sensors",
+        "Sensors",
+        "electronic-semiconductor",
+        ("electronic sensor", "chemical sensor", "gas sensor", "pressure sensor", "biosensor", "strain sensor"),
+        (),
+    ),
+    (
+        "machine-learning",
+        "Machine learning",
+        "ai-computational",
+        ("machine learning", "deep learning", "neural network", "convolutional neural network", "recurrent neural network"),
+        (),
+    ),
+    (
+        "transformer-llm",
+        "Transformer & LLM",
+        "ai-computational",
+        ("transformer model", "large language model", "foundation model", "generative artificial intelligence", "generative AI"),
+        (),
+    ),
+    (
+        "inverse-design",
+        "Inverse design",
+        "ai-computational",
+        ("inverse design", "topology optimization", "generative design", "computational design optimization"),
+        (),
+    ),
+    (
+        "surrogate-modelling",
+        "Surrogate modelling",
+        "ai-computational",
+        ("surrogate model", "reduced-order model", "Bayesian optimization", "Gaussian process regression"),
+        (),
+    ),
+    (
+        "physics-informed-ai",
+        "Physics-informed AI",
+        "ai-computational",
+        ("physics-informed neural network", "physics-informed machine learning", "PINN", "neural operator"),
+        (),
+    ),
+    (
+        "materials-informatics",
+        "Materials informatics",
+        "ai-computational",
+        ("materials informatics", "materials discovery", "machine-learning interatomic potential", "property prediction"),
+        (),
+    ),
+    (
+        "autonomous-research",
+        "Autonomous research",
+        "ai-computational",
+        ("autonomous experiment", "self-driving laboratory", "automated experimentation", "active learning", "robotic laboratory"),
+        (),
+    ),
+    (
+        "digital-twin",
+        "Digital twin",
+        "ai-computational",
+        ("digital twin", "virtual sensor", "data-driven modelling", "predictive maintenance"),
+        (),
+    ),
+    (
+        "xray-characterization",
+        "X-ray characterization",
+        "characterization-reliability",
+        ("x-ray diffraction", "XRD", "reciprocal space mapping", "RSM", "rocking curve", "omega scan"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "electron-microscopy",
+        "Electron microscopy",
+        "characterization-reliability",
+        ("scanning electron microscopy", "SEM", "transmission electron microscopy", "TEM", "STEM"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "probe-microscopy",
+        "Probe microscopy",
+        "characterization-reliability",
+        ("atomic force microscopy", "AFM", "piezoresponse force microscopy", "PFM", "Kelvin probe force microscopy"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "spectroscopy",
+        "Spectroscopy",
+        "characterization-reliability",
+        ("x-ray photoelectron spectroscopy", "XPS", "Raman spectroscopy", "secondary ion mass spectrometry", "SIMS"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "crystal-quality",
+        "Crystal quality",
+        "characterization-reliability",
+        ("crystal orientation", "c-axis texture", "mosaicity", "residual stress", "dislocation density", "full width at half maximum"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "reliability",
+        "Reliability",
+        "characterization-reliability",
+        ("device reliability", "fatigue endurance", "breakdown field", "time-dependent dielectric breakdown", "aging", "thermal stability", "frequency drift"),
+        CHARACTERIZATION_CONTEXT_GROUPS,
+    ),
+    (
+        "phononics",
+        "Phononics",
+        "emerging-cross-disciplinary",
+        ("phononics", "phononic crystal", "phononic bandgap", "acoustic metamaterial", "topological acoustics"),
+        (),
+    ),
+    (
+        "quantum-acoustics",
+        "Quantum acoustics",
+        "emerging-cross-disciplinary",
+        ("quantum acoustics", "quantum acoustic", "phonon qubit", "single phonon", "microwave-to-acoustic conversion"),
+        (),
+    ),
+    (
+        "optomechanics",
+        "Optomechanics",
+        "emerging-cross-disciplinary",
+        ("cavity optomechanics", "optomechanical resonator", "acousto-optic interaction", "microwave-to-optical conversion"),
+        (),
+    ),
+    (
+        "acoustofluidics",
+        "Acoustofluidics",
+        "emerging-cross-disciplinary",
+        ("acoustofluidics", "acoustic microfluidics", "surface acoustic wave microfluidics", "acoustic particle manipulation"),
+        (),
+    ),
+    (
+        "energy-harvesting",
+        "Energy harvesting",
+        "emerging-cross-disciplinary",
+        ("piezoelectric energy harvesting", "piezoelectric energy harvester", "vibration energy harvesting", "triboelectric generator"),
+        (),
+    ),
+    (
+        "flexible-devices",
+        "Flexible devices",
+        "emerging-cross-disciplinary",
+        ("flexible electronics", "stretchable electronics", "wearable sensor", "flexible piezoelectric", "bio-integrated electronics"),
+        (),
+    ),
+    (
+        "nonreciprocal-acoustics",
+        "Nonreciprocal acoustics",
+        "emerging-cross-disciplinary",
+        ("nonreciprocal acoustics", "non-reciprocal acoustic", "acoustic isolator", "acoustic circulator"),
+        (),
+    ),
+)
+
 
 def write_yaml(tmp_path: Path, content: str) -> Path:
     path = tmp_path / "config.yml"
@@ -600,7 +1031,7 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
 
 
 def test_seed_configuration_contains_only_approved_topics() -> None:
-    expected_groups = [
+    expected_groups = (
         ("acoustic-rf", "声学与射频器件", 1),
         ("piezo-ferroelectric", "压电与铁电薄膜", 2),
         ("ultrasound-sensing", "超声换能器与声学传感", 3),
@@ -609,89 +1040,24 @@ def test_seed_configuration_contains_only_approved_topics() -> None:
         ("ai-computational", "人工智能与计算设计", 6),
         ("characterization-reliability", "材料表征与器件可靠性", 7),
         ("emerging-cross-disciplinary", "新兴交叉方向", 8),
-    ]
-    expected_ids = [
-        "baw",
-        "saw",
-        "fbar",
-        "lamb-wave",
-        "acoustic-resonator",
-        "rf-microwave",
-        "multiplexer",
-        "piezoelectric",
-        "ferroelectric",
-        "aln",
-        "alscn",
-        "pzt",
-        "linbo3",
-        "hfo2-hzo",
-        "lead-free-piezoelectrics",
-        "film-growth",
-        "pmut",
-        "cmut",
-        "ultrasonic-transducer",
-        "ultrasound-imaging",
-        "therapeutic-ultrasound",
-        "acoustic-sensing",
-        "mems",
-        "nems",
-        "microfabrication",
-        "wafer-integration",
-        "cmos-integration",
-        "packaging",
-        "transistor",
-        "ferroelectric-transistor",
-        "memory-memristor",
-        "power-electronics",
-        "wide-bandgap-devices",
-        "2d-electronics",
-        "sensors",
-        "machine-learning",
-        "transformer-llm",
-        "inverse-design",
-        "surrogate-modelling",
-        "physics-informed-ai",
-        "materials-informatics",
-        "autonomous-research",
-        "digital-twin",
-        "xray-characterization",
-        "electron-microscopy",
-        "probe-microscopy",
-        "spectroscopy",
-        "crystal-quality",
-        "reliability",
-        "phononics",
-        "quantum-acoustics",
-        "optomechanics",
-        "acoustofluidics",
-        "energy-harvesting",
-        "flexible-devices",
-        "nonreciprocal-acoustics",
-    ]
+    )
 
     catalog = load_topic_catalog(PROJECT_ROOT / "topics.yml")
 
-    assert [(group.id, group.label, group.order) for group in catalog.groups] == expected_groups
-    assert [topic.id for topic in catalog.topics] == expected_ids
-    assert len(catalog.groups) == 8
-    assert len(catalog.topics) == 56
-
-    topics = {topic.id: topic for topic in catalog.topics}
-    assert topics["baw"].keywords == (
-        "bulk acoustic wave",
-        "bulk acoustic resonator",
-        "BAW resonator",
-        "BAW filter",
+    actual_groups = tuple(
+        (group.id, group.label, group.order) for group in catalog.groups
     )
-    assert "MEMS packaging" in topics["packaging"].keywords
-    assert "generative AI" in topics["transformer-llm"].keywords
-    assert "full width at half maximum" in topics["crystal-quality"].keywords
-
-    characterization_requirements = tuple(
-        group_id
-        for group_id, _, _ in expected_groups
-        if group_id != "characterization-reliability"
+    actual_topics = tuple(
+        (
+            topic.id,
+            topic.label,
+            topic.group,
+            topic.keywords,
+            topic.requires_any_group,
+        )
+        for topic in catalog.topics
     )
-    for topic in catalog.topics:
-        if topic.group == "characterization-reliability":
-            assert topic.requires_any_group == characterization_requirements
+
+    assert len(EXPECTED_PRODUCTION_TOPICS) == 56
+    assert actual_groups == expected_groups
+    assert actual_topics == EXPECTED_PRODUCTION_TOPICS

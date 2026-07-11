@@ -1,12 +1,7 @@
 from dataclasses import replace
-from pathlib import Path
-
 from paper_radar.classify import classify_article
-from paper_radar.config import TopicConfig, load_topics
+from paper_radar.config import TopicConfig
 from paper_radar.models import ArticleRecord
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _article(*, title: str, abstract: str | None = None) -> ArticleRecord:
@@ -52,21 +47,11 @@ def test_classify_acronyms_require_token_boundaries_but_allow_hyphens() -> None:
     assert classify_article(_article(title="The RF response"), [rf]) == [rf]
 
 
-def test_classify_real_rf_microwave_topic_uses_approved_catalog_entry() -> None:
-    rf = next(
-        topic for topic in load_topics(PROJECT_ROOT / "topics.yml") if topic.id == "rf-microwave"
-    )
+def test_classify_rf_keyword_matches_hyphenated_compound_continuations() -> None:
+    rf = _topic("rf", "radio frequency", "radio-frequency", "RF")
 
-    assert rf.keywords == (
-        "radio frequency",
-        "RF front-end",
-        "RF filter",
-        "microwave",
-        "millimeter wave",
-        "millimetre wave",
-        "mmWave",
-    )
-    assert classify_article(_article(title="radio frequency response"), [rf]) == [rf]
+    assert classify_article(_article(title="radio-frequency-response"), [rf]) == [rf]
+    assert classify_article(_article(title="radio-frequency-filter design"), [rf]) == [rf]
 
 
 def test_classify_unicode_dash_keyword_matches_dash_compound_continuation() -> None:
