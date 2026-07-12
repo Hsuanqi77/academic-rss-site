@@ -610,6 +610,27 @@ feeds:
     assert feeds[0].aliases == ("Former Name", "Legacy Name")
 
 
+@pytest.mark.parametrize(
+    "publisher",
+    ("nature", "aps", "aip", "ieee", "wiley", "elsevier", "aaas", "springer"),
+)
+def test_supported_publishers_load(publisher: str, tmp_path: Path) -> None:
+    path = write_yaml(
+        tmp_path,
+        f"""
+feeds:
+  - id: {publisher}-test
+    name: Supported Publisher Feed
+    publisher: {publisher}
+    feed_url: https://example.com/{publisher}.xml
+""",
+    )
+
+    feeds = load_feeds(path)
+
+    assert feeds[0].publisher == publisher
+
+
 def test_topic_without_keywords_is_rejected(tmp_path: Path) -> None:
     path = write_yaml(
         tmp_path,

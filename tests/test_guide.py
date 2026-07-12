@@ -79,6 +79,34 @@ def test_render_guide_groups_enabled_feeds_and_topics_with_escaped_text() -> Non
     assert html.index("声学与射频器件") < html.index("电子器件")
 
 
+def test_render_guide_orders_all_supported_publishers() -> None:
+    publishers = ("nature", "aps", "aip", "ieee", "wiley", "elsevier", "aaas", "springer")
+    feeds = tuple(
+        FeedConfig(
+            f"feed-{index}",
+            f"Journal {index}",
+            publisher,
+            f"https://example.com/feed-{index}.rss",
+        )
+        for index, publisher in enumerate(publishers, start=1)
+    )
+    labels = (
+        "Nature Portfolio",
+        "American Physical Society",
+        "AIP Publishing",
+        "IEEE",
+        "Wiley",
+        "Elsevier",
+        "AAAS",
+        "Springer Nature",
+    )
+
+    html = render_guide(feeds, _catalog())
+
+    positions = tuple(html.index(label) for label in labels)
+    assert positions == tuple(sorted(positions))
+
+
 def test_render_guide_uses_native_disclosures_and_actual_counts() -> None:
     html = render_guide(_feeds(), _catalog())
 

@@ -11,9 +11,13 @@ GUIDE_START = "<!-- GUIDE:START -->"
 GUIDE_END = "<!-- GUIDE:END -->"
 PUBLISHER_LABELS = {
     "nature": "Nature Portfolio",
-    "ieee": "IEEE",
+    "aps": "American Physical Society",
     "aip": "AIP Publishing",
+    "ieee": "IEEE",
     "wiley": "Wiley",
+    "elsevier": "Elsevier",
+    "aaas": "AAAS",
+    "springer": "Springer Nature",
 }
 
 

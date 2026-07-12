@@ -13,7 +13,7 @@ from yaml.nodes import MappingNode
 from paper_radar.matching import normalize_match_separators
 
 
-VALID_PUBLISHERS = {"nature", "aip", "ieee", "wiley"}
+VALID_PUBLISHERS = {"nature", "aps", "aip", "ieee", "wiley", "elsevier", "aaas", "springer"}
 _HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$", re.IGNORECASE)
 _FEED_FIELDS = frozenset({"id", "name", "publisher", "feed_url", "enabled", "aliases"})
 _TOPIC_CATALOG_FIELDS = frozenset({"topic_groups", "topics"})
