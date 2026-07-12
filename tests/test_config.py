@@ -1097,7 +1097,12 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
         "nature-reviews-genetics",
         "nature-reviews-cancer",
         "microsystems-nanoengineering",
+        "nature-electronics",
+        "npj-computational-materials",
+        "physical-review-applied",
         "applied-physics-letters",
+        "journal-applied-physics",
+        "apl-materials",
         "ieee-transactions-ultrasonics",
         "ieee-transactions-mtt",
         "ieee-microwave-wireless-technology-letters",
@@ -1106,6 +1111,10 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
         "journal-microelectromechanical-systems",
         "advanced-materials",
         "advanced-functional-materials",
+        "advanced-electronic-materials",
+        "acta-materialia",
+        "science-advances",
+        "nano-micro-letters",
     ]
 
     feeds = load_feeds(PROJECT_ROOT / "feeds.yml")
@@ -1115,6 +1124,69 @@ def test_seed_configuration_contains_only_approved_feeds() -> None:
     assert (
         ultrasonics_feed.name
         == "IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control"
+    )
+
+
+def test_seed_configuration_contains_nine_new_production_feeds() -> None:
+    expected = {
+        "physical-review-applied": (
+            "Physical Review Applied",
+            "aps",
+            "https://feeds.aps.org/rss/recent/prapplied.xml",
+        ),
+        "nature-electronics": (
+            "Nature Electronics",
+            "nature",
+            "https://www.nature.com/natelectron.rss",
+        ),
+        "advanced-electronic-materials": (
+            "Advanced Electronic Materials",
+            "wiley",
+            "https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&feed=rss&jc=2199160X",
+        ),
+        "journal-applied-physics": (
+            "Journal of Applied Physics",
+            "aip",
+            "https://pubs.aip.org/rss/site_1000029/1000017.xml",
+        ),
+        "apl-materials": (
+            "APL Materials",
+            "aip",
+            "https://pubs.aip.org/rss/site_1000013/1000009.xml",
+        ),
+        "npj-computational-materials": (
+            "npj Computational Materials",
+            "nature",
+            "https://www.nature.com/npjcompumats.rss",
+        ),
+        "acta-materialia": (
+            "Acta Materialia",
+            "elsevier",
+            "https://rss.sciencedirect.com/publication/science/13596454",
+        ),
+        "science-advances": (
+            "Science Advances",
+            "aaas",
+            "https://feeds.science.org/rss/science-advances.xml",
+        ),
+        "nano-micro-letters": (
+            "Nano-Micro Letters",
+            "springer",
+            "https://link.springer.com/search.rss?facet-journal-id=40820",
+        ),
+    }
+
+    feeds = load_feeds(PROJECT_ROOT / "feeds.yml")
+    actual = {
+        feed.id: (feed.name, feed.publisher, feed.feed_url, feed.enabled)
+        for feed in feeds
+    }
+
+    assert len(feeds) == 29
+    for feed_id, production_contract in expected.items():
+        assert actual[feed_id] == (*production_contract, True)
+    assert all(
+        feed.name.casefold() != "acs applied materials & interfaces" for feed in feeds
     )
 
 

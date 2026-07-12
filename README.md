@@ -2,7 +2,7 @@
 
 Paper Radar 是一个供个人使用的多出版社学术 RSS 聚合网站。Python 程序从期刊官方公开 RSS 获取论文元数据，写入 SQLite；浏览器通过本地 `sql.js` / WebAssembly 直接查询经过校验的数据库，因此不需要服务器端程序。静态页面可以部署到 GitHub Pages。
 
-当前配置收录 20 本期刊：Nature Portfolio 11 本、Applied Physics Letters、IEEE 6 本，以及 Wiley 的 Advanced Materials 和 Advanced Functional Materials。完整名称和官方 RSS 地址以 [`feeds.yml`](feeds.yml) 为准。
+当前配置收录 29 本期刊：Nature Portfolio 13 本、American Physical Society 1 本、AIP Publishing 3 本、IEEE 6 本、Wiley 3 本、Elsevier 1 本、AAAS 1 本，以及 Springer Nature 1 本。所有来源返回的论文都会先全量入库，再按统一的精细标签规则自动分类，不在抓取阶段按主题预过滤。完整名称和官方 RSS 地址以 [`feeds.yml`](feeds.yml) 为准。
 
 > 本仓库已经公开部署；当前生产网站和源代码仓库链接见文末 **Production site**。
 
@@ -88,7 +88,7 @@ node --test tests/web/*.test.mjs
 
 - 唯一的 `id`；
 - 显示名称 `name`；
-- 支持的 `publisher`：`nature`、`aip`、`ieee` 或 `wiley`；
+- 支持的 `publisher`：`nature`、`aps`、`aip`、`ieee`、`wiley`、`elsevier`、`aaas` 或 `springer`；
 - 出版商官方公开的 HTTPS `feed_url`；
 - 可选的 `enabled` 与历史 `aliases`。
 

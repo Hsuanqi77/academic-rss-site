@@ -43,10 +43,30 @@ feeds:
     name: Microsystems & Nanoengineering
     publisher: nature
     feed_url: https://www.nature.com/micronano.rss
+  - id: nature-electronics
+    name: Nature Electronics
+    publisher: nature
+    feed_url: https://www.nature.com/natelectron.rss
+  - id: npj-computational-materials
+    name: npj Computational Materials
+    publisher: nature
+    feed_url: https://www.nature.com/npjcompumats.rss
+  - id: physical-review-applied
+    name: Physical Review Applied
+    publisher: aps
+    feed_url: https://feeds.aps.org/rss/recent/prapplied.xml
   - id: applied-physics-letters
     name: Applied Physics Letters
     publisher: aip
     feed_url: https://pubs.aip.org/rss/site_1000017/1000011.xml
+  - id: journal-applied-physics
+    name: Journal of Applied Physics
+    publisher: aip
+    feed_url: https://pubs.aip.org/rss/site_1000029/1000017.xml
+  - id: apl-materials
+    name: APL Materials
+    publisher: aip
+    feed_url: https://pubs.aip.org/rss/site_1000013/1000009.xml
   - id: ieee-transactions-ultrasonics
     name: IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control
     publisher: ieee
@@ -79,3 +99,19 @@ feeds:
     name: Advanced Functional Materials
     publisher: wiley
     feed_url: "https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&feed=rss&jc=16163028"
+  - id: advanced-electronic-materials
+    name: Advanced Electronic Materials
+    publisher: wiley
+    feed_url: "https://advanced.onlinelibrary.wiley.com/action/showFeed?type=etoc&feed=rss&jc=2199160X"
+  - id: acta-materialia
+    name: Acta Materialia
+    publisher: elsevier
+    feed_url: https://rss.sciencedirect.com/publication/science/13596454
+  - id: science-advances
+    name: Science Advances
+    publisher: aaas
+    feed_url: https://feeds.science.org/rss/science-advances.xml
+  - id: nano-micro-letters
+    name: Nano-Micro Letters
+    publisher: springer
+    feed_url: https://link.springer.com/search.rss?facet-journal-id=40820

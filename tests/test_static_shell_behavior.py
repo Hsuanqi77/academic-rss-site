@@ -322,7 +322,11 @@ def test_guide_chevron_does_not_pollute_name_and_rotates_with_open_state(
     page_factory: Callable[..., Page],
 ) -> None:
     page = page_factory()
-    group = page.locator("#guide details").nth(1)
+    ieee_groups = page.locator("#guide .guide-feed-groups details").filter(
+        has=page.get_by_text("IEEE", exact=True)
+    )
+    assert ieee_groups.count() == 1
+    group = ieee_groups.first
     summary = group.locator("summary")
     closed_transform = summary.evaluate(
         "element => getComputedStyle(element, '::before').transform"
