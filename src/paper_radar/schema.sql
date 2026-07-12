@@ -3,7 +3,9 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS journals (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
-    publisher TEXT NOT NULL CHECK (publisher IN ('nature', 'aip', 'ieee', 'wiley')),
+    publisher TEXT NOT NULL CHECK (
+        publisher IN ('nature', 'aps', 'aip', 'ieee', 'wiley', 'elsevier', 'aaas', 'springer')
+    ),
     feed_url TEXT NOT NULL UNIQUE,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     etag TEXT,
@@ -95,4 +97,4 @@ CREATE TABLE IF NOT EXISTS runs_log (
     notes TEXT NOT NULL DEFAULT ''
 );
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

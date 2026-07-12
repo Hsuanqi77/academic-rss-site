@@ -1,12 +1,33 @@
 import json
+import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 import paper_radar.database as database_module
-from paper_radar.database import SCHEMA_PATH, connect_database, initialize_database, upsert_article
+from paper_radar.config import load_feeds
+from paper_radar.database import (
+    SCHEMA_PATH,
+    connect_database,
+    initialize_database,
+    register_journal,
+    upsert_article,
+)
 from paper_radar.models import ArticleRecord
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+APPROVED_PUBLISHERS = (
+    "nature",
+    "aps",
+    "aip",
+    "ieee",
+    "wiley",
+    "elsevier",
+    "aaas",
+    "springer",
+)
 
 
 def insert_journal(
@@ -94,6 +115,20 @@ def create_v2_database(
     )
 
 
+def create_legacy_v3_database(connection: sqlite3.Connection) -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    schema = re.sub(
+        r"publisher TEXT NOT NULL CHECK \(.*?\)(?=,\n    feed_url)",
+        "publisher TEXT NOT NULL CHECK "
+        "(publisher IN ('nature', 'aip', 'ieee', 'wiley'))",
+        schema,
+        count=1,
+        flags=re.DOTALL,
+    )
+    schema = re.sub(r"PRAGMA user_version = \d+;", "PRAGMA user_version = 3;", schema)
+    connection.executescript(schema)
+
+
 def test_schema_path_targets_packaged_sql_file() -> None:
     assert SCHEMA_PATH.name == "schema.sql"
     assert SCHEMA_PATH.parent.name == "paper_radar"
@@ -101,7 +136,179 @@ def test_schema_path_targets_packaged_sql_file() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS article_url_aliases" in schema
     assert "enriched_fields_json TEXT NOT NULL DEFAULT '[]'" in schema
-    assert "PRAGMA user_version = 3" in schema
+    assert "PRAGMA user_version = 4" in schema
+
+
+def test_new_database_accepts_all_approved_publishers_and_rejects_unknown(
+    tmp_path: Path,
+) -> None:
+    connection = connect_database(tmp_path / "publisher-contract.sqlite3")
+    try:
+        initialize_database(connection)
+
+        for index, publisher in enumerate(APPROVED_PUBLISHERS):
+            connection.execute(
+                "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
+                (
+                    f"journal-{publisher}",
+                    f"Journal {publisher}",
+                    publisher,
+                    f"https://example.com/{index}.xml",
+                ),
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
+                ("journal-unknown", "Unknown", "unknown", "https://example.com/unknown.xml"),
+            )
+    finally:
+        connection.close()
+
+
+def test_initialize_database_migrates_legacy_v3_publisher_constraint_with_data(
+    tmp_path: Path,
+) -> None:
+    connection = connect_database(tmp_path / "legacy-v3.sqlite3")
+    try:
+        create_legacy_v3_database(connection)
+        insert_journal(connection)
+        connection.execute(
+            """
+            UPDATE journals
+            SET enabled = 0, etag = 'etag-value', last_modified = 'last-modified-value',
+                last_checked_at = '2026-07-10T09:00:00Z',
+                last_success_at = '2026-07-10T08:00:00Z', last_status = 'ok'
+            WHERE id = 'journal-1'
+            """
+        )
+        insert_article(
+            connection,
+            uid="preserved-article",
+            normalized_url="https://example.com/articles/preserved",
+        )
+        connection.execute("INSERT INTO tags (id, label) VALUES ('tag-1', 'Acoustics')")
+        connection.execute(
+            "INSERT INTO article_tags (article_uid, tag_id) VALUES "
+            "('preserved-article', 'tag-1')"
+        )
+        connection.commit()
+
+        initialize_database(connection)
+        for publisher in ("aps", "elsevier", "aaas", "springer"):
+            connection.execute(
+                "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
+                (
+                    f"journal-{publisher}",
+                    publisher,
+                    publisher,
+                    f"https://example.com/{publisher}.xml",
+                ),
+            )
+        connection.commit()
+
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT journal_id FROM articles WHERE uid = 'preserved-article'"
+        ).fetchone()[0] == "journal-1"
+        assert tuple(
+            connection.execute("SELECT article_uid, tag_id FROM article_tags").fetchone()
+        ) == ("preserved-article", "tag-1")
+        assert connection.execute(
+            "SELECT article_uid FROM article_url_aliases"
+        ).fetchone()[0] == "preserved-article"
+        assert tuple(
+            connection.execute(
+                """
+                SELECT enabled, etag, last_modified, last_checked_at,
+                       last_success_at, last_status, last_error
+                FROM journals WHERE id = 'journal-1'
+                """
+            ).fetchone()
+        ) == (
+            0,
+            "etag-value",
+            "last-modified-value",
+            "2026-07-10T09:00:00Z",
+            "2026-07-10T08:00:00Z",
+            "ok",
+            None,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
+                ("unknown", "Unknown", "unknown", "https://example.com/unknown.xml"),
+            )
+        connection.rollback()
+
+        initialize_database(connection)
+        assert connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
+
+
+def test_v3_publisher_migration_failure_rolls_back_schema_data_and_connection_state(
+    tmp_path: Path,
+) -> None:
+    class PublisherMigrationFailingConnection(sqlite3.Connection):
+        def execute(  # type: ignore[override]
+            self, sql: str, parameters: tuple[object, ...] = ()
+        ) -> sqlite3.Cursor:
+            if sql == "ALTER TABLE journals_v4 RENAME TO journals":
+                raise sqlite3.OperationalError("injected publisher migration failure")
+            return super().execute(sql, parameters)
+
+    connection = sqlite3.connect(
+        tmp_path / "v3-publisher-failure.sqlite3",
+        factory=PublisherMigrationFailingConnection,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        create_legacy_v3_database(connection)
+        insert_journal(connection)
+        insert_article(connection, uid="preserved")
+        connection.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="publisher migration failure"):
+            initialize_database(connection)
+
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.in_transaction is False
+        assert connection.execute("SELECT name FROM journals").fetchone()[0] == "Example Journal"
+        assert connection.execute("SELECT title FROM articles").fetchone()[0] == "Article preserved"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'journals_v4'"
+        ).fetchone()[0] == 0
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO journals (id, name, publisher, feed_url) VALUES (?, ?, ?, ?)",
+                ("aps", "APS", "aps", "https://example.com/aps.xml"),
+            )
+    finally:
+        connection.close()
+
+
+def test_production_feeds_register_all_29_journals(tmp_path: Path) -> None:
+    feeds = load_feeds(PROJECT_ROOT / "feeds.yml")
+    connection = connect_database(tmp_path / "production-feeds.sqlite3")
+    try:
+        initialize_database(connection)
+        for feed in feeds:
+            register_journal(connection, feed)
+
+        assert len(feeds) == 29
+        assert connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 29
+        assert {
+            row[0] for row in connection.execute("SELECT DISTINCT publisher FROM journals")
+        } == set(APPROVED_PUBLISHERS)
+    finally:
+        connection.close()
 
 
 def test_connect_database_creates_parent_and_applies_connection_settings(tmp_path: Path) -> None:
@@ -122,7 +329,7 @@ def test_connect_database_creates_parent_and_applies_connection_settings(tmp_pat
         connection.close()
 
 
-def test_initialize_database_creates_version_three_schema(tmp_path: Path) -> None:
+def test_initialize_database_creates_version_four_schema(tmp_path: Path) -> None:
     connection = sqlite3.connect(tmp_path / "paper-radar.sqlite3")
     connection.row_factory = sqlite3.Row
     try:
@@ -144,7 +351,7 @@ def test_initialize_database_creates_version_three_schema(tmp_path: Path) -> Non
             "article_tags",
             "runs_log",
         }
-        assert version == 3
+        assert version == 4
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         connection.close()
@@ -167,7 +374,7 @@ def test_initialize_database_is_idempotent_and_preserves_data(tmp_path: Path) ->
             "publisher": "nature",
             "feed_url": "https://example.com/feed.xml",
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -230,10 +437,10 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
     try:
         connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
         connection.execute("INSERT INTO sentinel VALUES ('preserve me')")
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute("PRAGMA user_version = 5")
         connection.commit()
 
-        with pytest.raises(RuntimeError, match="unsupported database schema version: 4"):
+        with pytest.raises(RuntimeError, match="unsupported database schema version: 5"):
             initialize_database(connection)
 
         tables = {
@@ -244,7 +451,7 @@ def test_initialize_database_rejects_unsupported_version_without_altering_it(
         }
         assert tables == {"sentinel"}
         assert connection.execute("SELECT value FROM sentinel").fetchone()[0] == "preserve me"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -545,7 +752,7 @@ def test_initialize_database_migrates_v1_and_backfills_url_aliases(tmp_path: Pat
         }
         assert article_columns["enriched_fields_json"]["notnull"] == 1
         assert article_columns["enriched_fields_json"]["dflt_value"] == "'[]'"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.in_transaction is False
     finally:
         connection.close()
@@ -576,7 +783,7 @@ def test_initialize_database_migrates_v2_enriched_fields_atomically_and_idempote
             ).fetchone()[0]
             == "[]"
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert (
             sum(
                 statement.startswith("ALTER TABLE articles ADD COLUMN enriched_fields_json")
@@ -655,7 +862,7 @@ def test_legacy_migration_backfills_provenance_and_protects_fields(
 
         initialize_database(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
         provenance = {
             row["uid"]: json.loads(row["enriched_fields_json"])
@@ -762,7 +969,7 @@ def test_initialize_database_does_not_alter_v2_when_provenance_column_exists(
             ).fetchone()[0]
             == '["title"]'
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
     finally:
         connection.close()
 

@@ -127,7 +127,7 @@ node --test tests/web/*.test.mjs
 
 1. JSON 状态为 `ok` 或 `partial`；
 2. Nature、AIP、IEEE、Wiley 至少各有一个成功来源；
-3. `docs/data/papers.db` 通过 schema v3 和完整性检查；
+3. `docs/data/papers.db` 通过 schema v4 和完整性检查；
 4. 本地页面无控制台错误，桌面筛选与 390 px 手机抽屉可用。
 
 第二轮：

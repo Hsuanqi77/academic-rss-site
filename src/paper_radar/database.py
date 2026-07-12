@@ -862,22 +862,70 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError("cannot initialize database with a pending transaction")
 
     connection.execute("PRAGMA foreign_keys = ON")
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version not in (0, 1, 2, 3, 4):
+        raise RuntimeError(f"unsupported database schema version: {version}")
+
+    rebuild_journals = version in (1, 2, 3)
+    if rebuild_journals:
+        connection.execute("PRAGMA foreign_keys = OFF")
     try:
         _begin_immediate(connection)
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
-            raise RuntimeError(f"unsupported database schema version: {version}")
-
         script = SCHEMA_PATH.read_text(encoding="utf-8")
         for statement in _schema_statements(script):
             connection.execute(statement)
         _ensure_enriched_fields_column(connection, source_version=version)
-        connection.execute("PRAGMA user_version = 3")
+        if rebuild_journals:
+            _migrate_journals_publisher_constraint(connection)
+        connection.execute("PRAGMA user_version = 4")
         connection.commit()
     except BaseException:
         if connection.in_transaction:
             connection.rollback()
         raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_journals_publisher_constraint(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE journals_v4 (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            publisher TEXT NOT NULL CHECK (
+                publisher IN (
+                    'nature', 'aps', 'aip', 'ieee', 'wiley', 'elsevier', 'aaas', 'springer'
+                )
+            ),
+            feed_url TEXT NOT NULL UNIQUE,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+            etag TEXT,
+            last_modified TEXT,
+            last_checked_at TEXT,
+            last_success_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'never',
+            last_error TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO journals_v4 (
+            id, name, publisher, feed_url, enabled, etag, last_modified,
+            last_checked_at, last_success_at, last_status, last_error
+        )
+        SELECT
+            id, name, publisher, feed_url, enabled, etag, last_modified,
+            last_checked_at, last_success_at, last_status, last_error
+        FROM journals
+        """
+    )
+    connection.execute("DROP TABLE journals")
+    connection.execute("ALTER TABLE journals_v4 RENAME TO journals")
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise sqlite3.IntegrityError("foreign key violations after journals migration")
 
 
 def _ensure_enriched_fields_column(connection: sqlite3.Connection, *, source_version: int) -> None:

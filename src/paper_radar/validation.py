@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-EXPECTED_SCHEMA_VERSION = 3
+EXPECTED_SCHEMA_VERSION = 4
 MINIMUM_PREVIOUS_FRACTION = 0.5
 _PUBLISHABLE_RUN_STATUSES = frozenset({"ok", "partial"})
 _REQUIRED_TABLES = frozenset(
@@ -98,7 +98,7 @@ def _open_readonly(path: Path) -> sqlite3.Connection:
 def validate_database(
     path: Path | str, *, previous_path: Path | str | None = None
 ) -> ValidationReport:
-    """Validate a schema-v3 publication candidate without modifying it."""
+    """Validate a schema-v4 publication candidate without modifying it."""
 
     database_path = Path(path)
     report = _validate_single_database(database_path)

@@ -14,7 +14,7 @@ def _database(
     *,
     articles: int = 1,
     run_status: str | None = "ok",
-    schema_version: int = 3,
+    schema_version: int = 4,
 ) -> None:
     connection = connect_database(path)
     initialize_database(connection)
@@ -64,7 +64,7 @@ def test_validate_database_returns_a_report_for_a_publishable_database(tmp_path:
     assert report.journal_count == 1
     assert report.earliest_date == "2026-07-01T00:00:00Z"
     assert report.latest_date == "2026-07-02T00:00:00Z"
-    assert report.schema_version == 3
+    assert report.schema_version == 4
 
 
 @pytest.mark.parametrize("kind", ["missing", "directory", "corrupt"])

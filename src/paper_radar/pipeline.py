@@ -67,7 +67,7 @@ def update_database(
     min_interval: float = 0.5,
     clock: Callable[[], float] = time.monotonic,
 ) -> RunSummary:
-    """Update a schema-v3 database while isolating operational failures by feed and item."""
+    """Update a schema-v4 database while isolating operational failures by feed and item."""
 
     _validate_pipeline_configuration(
         client=client,

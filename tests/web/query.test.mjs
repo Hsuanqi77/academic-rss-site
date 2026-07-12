@@ -154,7 +154,7 @@ test("direct query tags reject invalid or excessive values before preparing SQL"
   assert.deepEqual(deduplicated.params, { ":tag0": "saw", ":tag1": "baw" });
 });
 
-test("filter options match enabled schema v3 values and always free statements", () => {
+test("filter options match enabled schema v4 values and always free statements", () => {
   const db = createDatabase();
   try {
     const options = loadFilterOptions(db);
@@ -242,7 +242,7 @@ test("database loader uses local WASM, cache busting, and clear validation error
     now: () => 456,
   });
   try {
-    assert.equal(real.exec("PRAGMA user_version")[0].values[0][0], 3);
+    assert.equal(real.exec("PRAGMA user_version")[0].values[0][0], 4);
   } finally {
     real.close();
   }

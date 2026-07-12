@@ -15,7 +15,7 @@ def _report() -> ValidationReport:
         journal_count=2,
         earliest_date="2026-07-01T00:00:00Z",
         latest_date="2026-07-03T00:00:00Z",
-        schema_version=3,
+        schema_version=4,
     )
 
 
@@ -291,7 +291,7 @@ def test_publish_success_reports_sizes_and_permission(
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["validation"]["schema_version"] == 3
+    assert payload["validation"]["schema_version"] == 4
     assert payload["working_size_bytes"] == len(b"working database")
     assert payload["published_size_bytes"] == len(b"published database")
     assert payload["publish_allowed"] is True

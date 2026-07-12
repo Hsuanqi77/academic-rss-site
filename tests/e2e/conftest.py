@@ -216,7 +216,7 @@ def published_site(tmp_path_factory: pytest.TempPathFactory) -> PublishedSite:
     report = publish_database(working, published)
     assert report.article_count == len(records)
     assert report.journal_count == 3
-    assert validate_database(published).schema_version == 3
+    assert validate_database(published).schema_version == 4
     return PublishedSite(site_root, published, len(records))
 
 
