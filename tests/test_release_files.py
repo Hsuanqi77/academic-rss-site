@@ -159,12 +159,15 @@ def test_production_guide_is_generated_from_release_configuration() -> None:
     index = index_path.read_text(encoding="utf-8")
 
     assert render_file(index_path, feeds=feeds, catalog=catalog, check=True)
-    assert sum(feed.enabled for feed in feeds) == 20
+    assert sum(feed.enabled for feed in feeds) == 29
     assert len(catalog.groups) == 8
     assert len(catalog.topics) == 56
     assert "每天检查的 RSS 列表" in index
     assert "标签与关键词" in index
-    assert "20 SOURCES" in index
+    assert "29 SOURCES" in index
+    assert index.count('class="guide-feed-url"') == 29
+    assert "ACS Applied Materials &amp; Interfaces" not in index
+    assert "ACS Applied Materials & Interfaces" not in index
     for group in catalog.groups:
         assert escape(group.label, quote=True) in index
     for topic in catalog.topics:

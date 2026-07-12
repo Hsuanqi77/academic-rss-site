@@ -134,8 +134,8 @@ def test_guide_has_accessible_native_disclosures_and_safe_links() -> None:
     parser.feed(html)
 
     assert parser.id_counts.get("guide") == 1
-    assert parser.details_count == 12
-    assert parser.summary_count == 12
+    assert parser.details_count == 16
+    assert parser.summary_count == 16
     assert parser.unsafe_external_links == []
 
 
