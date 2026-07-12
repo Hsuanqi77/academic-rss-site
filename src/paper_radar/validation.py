@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 EXPECTED_SCHEMA_VERSION = 4
+_PREVIOUS_SCHEMA_VERSIONS = frozenset({3, EXPECTED_SCHEMA_VERSION})
 MINIMUM_PREVIOUS_FRACTION = 0.5
 _PUBLISHABLE_RUN_STATUSES = frozenset({"ok", "partial"})
 _REQUIRED_TABLES = frozenset(
@@ -113,7 +114,10 @@ def validate_database(
             ) from exc
         if previous_exists:
             try:
-                previous_report = _validate_single_database(previous_database)
+                previous_report = _validate_single_database(
+                    previous_database,
+                    allowed_schema_versions=_PREVIOUS_SCHEMA_VERSIONS,
+                )
             except ValidationError as exc:
                 raise ValidationError(f"previous published database is invalid: {exc}") from exc
             if (
@@ -128,7 +132,11 @@ def validate_database(
     return report
 
 
-def _validate_single_database(path: Path) -> ValidationReport:
+def _validate_single_database(
+    path: Path,
+    *,
+    allowed_schema_versions: frozenset[int] = frozenset({EXPECTED_SCHEMA_VERSION}),
+) -> ValidationReport:
     try:
         if not path.exists():
             raise ValidationError(f"database does not exist: {path}")
@@ -151,9 +159,12 @@ def _validate_single_database(path: Path) -> ValidationReport:
             raise ValidationError("foreign key check failed")
 
         schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if schema_version != EXPECTED_SCHEMA_VERSION:
+        if schema_version not in allowed_schema_versions:
+            expected_versions = " or ".join(
+                str(version) for version in sorted(allowed_schema_versions)
+            )
             raise ValidationError(
-                f"schema version is {schema_version}; expected {EXPECTED_SCHEMA_VERSION}"
+                f"schema version is {schema_version}; expected {expected_versions}"
             )
 
         table_names = {

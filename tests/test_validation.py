@@ -1,11 +1,13 @@
 import os
+import re
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 import paper_radar.validation as validation_module
-from paper_radar.database import connect_database, initialize_database
+from paper_radar.database import SCHEMA_PATH, connect_database, initialize_database
 from paper_radar.validation import ValidationError, publish_database, validate_database
 
 
@@ -18,6 +20,40 @@ def _database(
 ) -> None:
     connection = connect_database(path)
     initialize_database(connection)
+    _populate_database(connection, articles=articles, run_status=run_status)
+    connection.execute(f"PRAGMA user_version = {schema_version}")
+    connection.commit()
+    connection.close()
+
+
+def _legacy_v3_database(
+    path: Path,
+    *,
+    articles: int = 1,
+    run_status: str | None = "ok",
+) -> None:
+    connection = connect_database(path)
+    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    schema = re.sub(
+        r"publisher TEXT NOT NULL CHECK \(.*?\)(?=,\n    feed_url)",
+        "publisher TEXT NOT NULL CHECK (publisher IN ('nature', 'aip', 'ieee', 'wiley'))",
+        schema,
+        count=1,
+        flags=re.DOTALL,
+    )
+    schema = re.sub(r"PRAGMA user_version = \d+;", "PRAGMA user_version = 3;", schema)
+    connection.executescript(schema)
+    _populate_database(connection, articles=articles, run_status=run_status)
+    connection.commit()
+    connection.close()
+
+
+def _populate_database(
+    connection: sqlite3.Connection,
+    *,
+    articles: int,
+    run_status: str | None,
+) -> None:
     connection.execute(
         """
         INSERT INTO journals (id, name, publisher, feed_url)
@@ -49,9 +85,6 @@ def _database(
             """,
             (run_status,),
         )
-    connection.execute(f"PRAGMA user_version = {schema_version}")
-    connection.commit()
-    connection.close()
 
 
 def test_validate_database_returns_a_report_for_a_publishable_database(tmp_path: Path) -> None:
@@ -116,11 +149,19 @@ def test_unknown_latest_run_status_is_rejected(tmp_path: Path) -> None:
         validate_database(database)
 
 
-def test_wrong_schema_version_is_rejected(tmp_path: Path) -> None:
+def test_wrong_candidate_schema_version_is_rejected(tmp_path: Path) -> None:
     database = tmp_path / "working.db"
     _database(database, schema_version=2)
 
-    with pytest.raises(ValidationError, match="schema version"):
+    with pytest.raises(ValidationError, match=r"schema version is 2; expected 4"):
+        validate_database(database)
+
+
+def test_real_schema_v3_candidate_is_rejected(tmp_path: Path) -> None:
+    database = tmp_path / "working.db"
+    _legacy_v3_database(database)
+
+    with pytest.raises(ValidationError, match=r"schema version is 3; expected 4"):
         validate_database(database)
 
 
@@ -168,6 +209,48 @@ def test_exactly_half_the_previous_article_count_is_allowed(tmp_path: Path) -> N
     assert validate_database(working, previous_path=previous).article_count == 5
 
 
+def test_schema_v3_previous_database_is_allowed_for_baseline_comparison(
+    tmp_path: Path,
+) -> None:
+    previous = tmp_path / "published.db"
+    working = tmp_path / "working.db"
+    _legacy_v3_database(previous, articles=10)
+    _database(working, articles=5)
+
+    report = validate_database(working, previous_path=previous)
+
+    assert report.article_count == 5
+    assert report.schema_version == 4
+
+
+def test_schema_v3_previous_database_still_enforces_article_count_drop(
+    tmp_path: Path,
+) -> None:
+    previous = tmp_path / "published.db"
+    working = tmp_path / "working.db"
+    _legacy_v3_database(previous, articles=10)
+    _database(working, articles=4)
+
+    with pytest.raises(ValidationError, match="dropped from 10 to 4"):
+        validate_database(working, previous_path=previous)
+
+
+@pytest.mark.parametrize("schema_version", [0, 1, 2, 5])
+def test_unsupported_previous_schema_version_blocks_publication(
+    tmp_path: Path, schema_version: int
+) -> None:
+    previous = tmp_path / "published.db"
+    working = tmp_path / "working.db"
+    _database(previous, schema_version=schema_version)
+    _database(working)
+
+    with pytest.raises(
+        ValidationError,
+        match=rf"previous published database is invalid: schema version is {schema_version}; expected 3 or 4",
+    ):
+        validate_database(working, previous_path=previous)
+
+
 def test_corrupt_previous_database_blocks_publication(tmp_path: Path) -> None:
     previous = tmp_path / "published.db"
     working = tmp_path / "working.db"
@@ -213,6 +296,64 @@ def test_publish_accepts_a_validated_partial_run(tmp_path: Path) -> None:
 
     assert report.article_count == 1
     assert validate_database(published).article_count == 1
+
+
+def test_migrated_schema_v3_baseline_validates_and_publishes_as_schema_v4(
+    tmp_path: Path,
+) -> None:
+    published = tmp_path / "published.db"
+    working = tmp_path / "working.db"
+    _legacy_v3_database(published, articles=2)
+    published_connection = sqlite3.connect(published)
+    published_connection.execute("INSERT INTO tags (id, label) VALUES ('tag', 'Tag')")
+    published_connection.execute(
+        "INSERT INTO article_tags (article_uid, tag_id) VALUES ('article-0', 'tag')"
+    )
+    published_connection.execute(
+        "INSERT INTO article_url_aliases (normalized_url, article_uid) "
+        "VALUES ('https://example.test/legacy-alias', 'article-0')"
+    )
+    published_connection.commit()
+    journal_schema = published_connection.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'journals'"
+    ).fetchone()[0]
+    assert "publisher IN ('nature', 'aip', 'ieee', 'wiley')" in journal_schema
+    assert published_connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    with pytest.raises(sqlite3.IntegrityError):
+        published_connection.execute(
+            "INSERT INTO journals (id, name, publisher, feed_url) "
+            "VALUES ('aps', 'APS', 'aps', 'https://example.test/aps')"
+        )
+    published_connection.rollback()
+    published_connection.close()
+
+    shutil.copyfile(published, working)
+    working_connection = connect_database(working)
+    initialize_database(working_connection)
+    assert working_connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert working_connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 2
+    working_connection.close()
+
+    unchanged_published = sqlite3.connect(published)
+    assert unchanged_published.execute("PRAGMA user_version").fetchone()[0] == 3
+    unchanged_published.close()
+
+    validation_report = validate_database(working, previous_path=published)
+    assert validation_report.schema_version == 4
+    assert validation_report.article_count == 2
+
+    report = publish_database(working, published)
+
+    assert report.schema_version == 4
+    final_connection = sqlite3.connect(published)
+    assert final_connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert final_connection.execute("SELECT COUNT(*) FROM journals").fetchone()[0] == 1
+    assert final_connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 2
+    assert final_connection.execute("SELECT COUNT(*) FROM tags").fetchone()[0] == 1
+    assert final_connection.execute("SELECT COUNT(*) FROM article_tags").fetchone()[0] == 1
+    assert final_connection.execute("SELECT COUNT(*) FROM article_url_aliases").fetchone()[0] == 1
+    final_connection.close()
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("failure_stage", ["backup", "replace"])
